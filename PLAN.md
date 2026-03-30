@@ -39,6 +39,7 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 
 - [ ] 基于 `contextvars.ContextVar` 实现线程安全的当前 run_id 栈
 - [ ] 实现 `push_run(run_id)` / `pop_run()` / `get_current_run_id()` 三个操作
+- [ ] 实现 `exec_order` 赋值：每条 trace 内按兄弟节点创建顺序自增（同一 `parent_run_id` 下从 0 开始计数），存入 `Run`
 - [ ] 验证异步场景（`asyncio`）下上下文隔离正确（不同协程不互相污染）
 - [ ] 编写测试：并发 + 异步混用场景
 
@@ -56,6 +57,7 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 
 - [ ] 设计 SQLite schema（与 P0.1 数据模型对齐）
 - [ ] 实现同步写入：`RunWriter.save(run: Run)`
+- [ ] 异步写入：在 async 上下文中用 `loop.run_in_executor` 包装同步写入，避免阻塞事件循环（备选：引入 `aiosqlite`）
 - [ ] 创建索引：`trace_id`、`parent_run_id`、`start_time`
 - [ ] 实现树查询：`get_trace(trace_id) -> list[Run]`（一次查询取出整棵树）
 - [ ] 默认存储路径：`~/.tracesmith/traces.db`，可通过环境变量覆盖
@@ -105,14 +107,14 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 
 - [ ] `POST /api/runs/batch`：接收 `{ "runs": [Run, ...] }` 批量写库
 - [ ] 输入校验：Pydantic schema 严格验证
-- [ ] 幂等性：同一 `run.id` 重复提交不报错，以首次为准
+- [ ] 幂等性：同一 `run.id` 重复提交不报错，以首次为准；依赖数据库层实现（SQLite: `INSERT OR IGNORE`，PostgreSQL: `ON CONFLICT DO NOTHING`），避免并发 race condition
 - [ ] 返回 `{ "accepted": N, "duplicates": M }`
 
 ### P1.4 Trace 查询 API
 
 - [ ] `GET /api/traces`：分页列表，返回根 run 摘要（id, name, duration, status, start_time, tag）
   - 查询参数：`page`、`page_size`、`run_type`、`tags`、`error`、`start_after`、`start_before`、`duration_gt`（ms）
-- [ ] `GET /api/traces/{trace_id}`：返回完整树形 JSON（递归嵌套结构）
+- [ ] `GET /api/traces/{trace_id}`：返回完整树形 JSON（递归嵌套结构，schema：根节点含 `children: Run[]` 字段，子节点递归同结构）；在此任务中定义并文档化该 schema，供前端 P2.2 TypeScript 类型直接对齐
 - [ ] `GET /api/runs/{run_id}`：返回单个 Run 完整数据
 
 ### P1.5 SDK HTTP Transport 层
@@ -121,7 +123,7 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 
 - [ ] 实现 `BatchBuffer`：内存队列 + 定时 flush（满 100 条 或 5s 触发）
 - [ ] 实现 `HttpClient`：向后端 `POST /api/runs/batch`，带重试（最多 3 次，指数退避）
-- [ ] 注册 `atexit` 钩子：进程退出时强制 flush 剩余数据
+- [ ] 注册 `atexit` 钩子：进程退出时强制 flush 剩余数据（注意：`atexit` 在 asyncio 程序中无法 `await`，需同步阻塞执行；同时注册 `signal.SIGTERM` handler 处理容器/进程被杀情形）
 - [ ] 支持配置：`TRACESMITH_ENDPOINT`、`TRACESMITH_API_KEY`（预留鉴权位）
 - [ ] 本地 SQLite 模式保留（离线 fallback，通过 `TRACESMITH_LOCAL=true` 启用）
 
@@ -213,7 +215,7 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 
 ### P3.2 API Key 鉴权（轻量版）
 
-- [ ] 后端：`POST /api/auth/keys` 生成 API Key（简单 token，存 DB）
+- [ ] 后端：`POST /api/auth/keys` 生成 API Key（随机生成，下发原始 key 一次，DB 中只存 `SHA-256(key)` hash，防止数据库泄露导致 key 泄露）
 - [ ] 后端：所有 API 接口校验 `Authorization: Bearer <key>` header
 - [ ] SDK：支持 `TRACESMITH_API_KEY` 环境变量
 - [ ] 前端：登录页（输入 key），key 存 localStorage
@@ -224,7 +226,13 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 - [ ] 更新 `docker-compose.yml`：加入前端服务，nginx 反代后端 `/api`
 - [ ] 环境变量：`VITE_API_BASE_URL` 注入
 
-### P3.4 SDK 接入文档
+### P3.4 时间轴甘特图
+
+- [ ] 前端：在 `TraceDetail` 页新增甘特图视图，以横向 bar 展示每个 run 的 start_time ~ end_time 区间
+- [ ] 无需新 API（数据已在 `GET /api/traces/{trace_id}` 中），纯前端渲染
+- [ ] 鼠标悬停显示 run 名称和耗时，点击与树视图联动选中同一节点
+
+### P3.5 SDK 接入文档
 
 - [ ] `README.md`：快速开始（3 步：安装 → 设置环境变量 → 加装饰器）
 - [ ] 装饰器 API 文档：所有参数说明 + 示例
@@ -234,6 +242,7 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 
 - [ ] `docker-compose up` 一键启动前后端 + 数据库
 - [ ] 完整走一遍：SDK 接入 → 上报 → UI 查看 → 搜索过滤 → API Key 鉴权
+- [ ] 甘特图与树视图联动正确
 - [ ] 文档能让新人 10 分钟内跑起来
 
 ---
@@ -242,7 +251,6 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 
 > 无硬性优先级，按实际需求选做
 
-- [ ] **时间轴甘特图**：每条 trace 内各 run 的执行时间段可视化（横向 bar chart）
 - [ ] **Token 成本估算**：根据 model 名和 token 数自动计算费用，dashboard 展示总消费
 - [ ] **Trace 对比**：选两条 trace 并排对比 Input/Output 差异
 - [ ] **Webhook**：支持配置 URL，trace 出错时 POST 通知
@@ -274,6 +282,7 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 | 大 trace（100+ 节点）前端渲染卡顿 | P2 | 虚拟滚动 or 懒展开，超过 50 子节点折叠 |
 | SDK 上报失败导致业务代码受影响 | P1 | 所有上报逻辑 try-except，失败只打日志不抛异常 |
 | 入参包含不可序列化对象 | P0 | 序列化失败时 fallback 为 `repr()` 截断字符串 |
+| SQLite→PostgreSQL 历史数据迁移 | P1 | P0 阶段 SQLite 数据视为开发临时数据，不做迁移；正式使用从 P1 PostgreSQL 起始，README 中明确说明 |
 
 ---
 
