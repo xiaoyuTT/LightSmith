@@ -4,7 +4,7 @@
 >
 > **技术栈**：Python SDK · FastAPI · SQLite→PostgreSQL · React + TypeScript · Docker
 >
-> **状态标记**：`[ ]` 待开始 · `[~]` 进行中 · `[x]` 已完成 · `[-]` 已跳过/不做
+> **状态标记**：`[ ]` 待开始 · `[~]` 进行中 · `[√]` 已完成 · `[-]` 已跳过/不做
 
 ---
 
@@ -100,10 +100,10 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 ### P0.1 基础数据模型
 
-- [ ] 定义 `Run` dataclass（id, parent_run_id, trace_id, name, run_type, inputs, outputs, error, start_time, end_time, metadata, tags, exec_order）
-- [ ] 定义 `RunType` 枚举：`chain / llm / tool / agent / custom`
-- [ ] 实现 `Run.to_dict()` / `Run.from_dict()` 序列化方法
-- [ ] 编写单元测试：序列化往返无损
+- [√] 定义 `Run` dataclass（id, parent_run_id, trace_id, name, run_type, inputs, outputs, error, start_time, end_time, metadata, tags, exec_order）
+- [√] 定义 `RunType` 枚举：`chain / llm / tool / agent / custom`
+- [√] 实现 `Run.to_dict()` / `Run.from_dict()` 序列化方法
+- [√] 编写单元测试：序列化往返无损
 
 ### P0.2 上下文管理器（调用树核心）
 
