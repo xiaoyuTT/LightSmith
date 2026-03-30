@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 本地数据库（P0 开发调试产物）
+*.db
+*.sqlite
+*.sqlite3
+~/.lightsmith/
+
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# Node / 前端
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+
+# Docker
+docker-compose.override.yml
+
+# Claude Code
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
