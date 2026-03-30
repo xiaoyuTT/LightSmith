@@ -1,4 +1,4 @@
-# TraceSmith 开发计划
+# LightSmith 开发计划
 
 > 仿 LangSmith 的可观测性工具，核心功能：装饰器插桩 / 调用树追踪 / Web UI 可视化
 >
@@ -19,6 +19,76 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 - P0 不依赖任何网络，SDK 可独立运行并在终端验证
 - P1 后端稳定后再接入前端，避免联调拖慢进度
 - 每个阶段结束后留 Review 节点，确认设计无误再推进
+
+---
+
+## 项目目录结构
+
+```
+LightTrace/                     # 仓库根目录（项目对外名称：LightSmith）
+├── sdk/                        # P0 · Python SDK 包
+│   ├── lightsmith/
+│   │   ├── __init__.py
+│   │   ├── models.py           # Run dataclass + RunType 枚举
+│   │   ├── context.py          # ContextVar 栈管理
+│   │   ├── decorators.py       # @traceable
+│   │   ├── storage/
+│   │   │   ├── sqlite.py       # 本地 SQLite writer（离线 fallback）
+│   │   │   └── http.py         # HTTP transport（P1.5 新增）
+│   │   └── integrations/
+│   │       └── openai.py       # wrap_openai
+│   ├── cli/
+│   │   └── tree_printer.py     # P0.5 CLI 工具
+│   ├── tests/
+│   └── pyproject.toml
+├── backend/                    # P1 · FastAPI 后端
+│   ├── app/
+│   │   ├── main.py
+│   │   ├── routers/            # API 路由（runs / traces / auth）
+│   │   ├── models/             # SQLAlchemy ORM 模型
+│   │   ├── schemas/            # Pydantic 请求/响应 schema
+│   │   └── db/                 # 数据库连接 + Repository 层
+│   ├── alembic/                # 数据库迁移脚本
+│   ├── tests/
+│   ├── Dockerfile
+│   └── pyproject.toml
+├── frontend/                   # P2 · React 前端
+│   ├── src/
+│   │   ├── components/         # 通用组件（RunNode、DetailPanel 等）
+│   │   ├── pages/              # 路由级页面（TraceList、TraceDetail）
+│   │   ├── api/                # API 客户端层（traces.ts）
+│   │   └── types/              # TypeScript 类型（与后端 schema 对齐）
+│   ├── Dockerfile
+│   └── package.json
+├── docker-compose.yml          # 一键启动后端 + PostgreSQL（P3 加入前端）
+├── .env.example                # 环境变量模板
+└── PLAN.md
+```
+
+---
+
+## 开发环境前置要求
+
+| 工具 | 最低版本 | 用途 |
+|------|---------|------|
+| Python | 3.11+ | SDK + 后端 |
+| Node.js | 20+ | 前端构建 |
+| Docker & Docker Compose | 最新稳定版 | 容器化部署 |
+| SQLite3 | 系统自带即可 | P0 本地调试 |
+
+---
+
+## 跨阶段接口契约
+
+各阶段结束时须锁定以下接口，后续阶段不得破坏性修改：
+
+**P0 结束前锁定 → `Run` 数据模型**
+- `Run` 的全部字段名、类型、序列化格式在 P0.1 确定
+- P1.5 HTTP Transport、P1.2 ORM 均以此为基准，不得在 P1 阶段新增/删除字段（只能在 Review 节点统一变更）
+
+**P1 结束前锁定 → REST API 响应 schema**
+- `GET /api/traces/{trace_id}` 的树形 JSON schema 在 P1.4 中定义并文档化
+- 前端 P2.2 的 TypeScript 类型直接对齐此 schema，不做二次抽象
 
 ---
 
@@ -60,7 +130,7 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 - [ ] 异步写入：在 async 上下文中用 `loop.run_in_executor` 包装同步写入，避免阻塞事件循环（备选：引入 `aiosqlite`）
 - [ ] 创建索引：`trace_id`、`parent_run_id`、`start_time`
 - [ ] 实现树查询：`get_trace(trace_id) -> list[Run]`（一次查询取出整棵树）
-- [ ] 默认存储路径：`~/.tracesmith/traces.db`，可通过环境变量覆盖
+- [ ] 默认存储路径：`~/.lightsmith/traces.db`，可通过环境变量覆盖
 
 ### P0.5 CLI 树打印工具
 
@@ -124,8 +194,8 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 - [ ] 实现 `BatchBuffer`：内存队列 + 定时 flush（满 100 条 或 5s 触发）
 - [ ] 实现 `HttpClient`：向后端 `POST /api/runs/batch`，带重试（最多 3 次，指数退避）
 - [ ] 注册 `atexit` 钩子：进程退出时强制 flush 剩余数据（注意：`atexit` 在 asyncio 程序中无法 `await`，需同步阻塞执行；同时注册 `signal.SIGTERM` handler 处理容器/进程被杀情形）
-- [ ] 支持配置：`TRACESMITH_ENDPOINT`、`TRACESMITH_API_KEY`（预留鉴权位）
-- [ ] 本地 SQLite 模式保留（离线 fallback，通过 `TRACESMITH_LOCAL=true` 启用）
+- [ ] 支持配置：`LIGHTSMITH_ENDPOINT`、`LIGHTSMITH_API_KEY`（预留鉴权位）
+- [ ] 本地 SQLite 模式保留（离线 fallback，通过 `LIGHTSMITH_LOCAL=true` 启用）
 
 ### P1.6 Docker 化
 
@@ -217,7 +287,7 @@ P0 SDK 核心  ──►  P1 后端服务  ──►  P2 前端 UI  ──►  P
 
 - [ ] 后端：`POST /api/auth/keys` 生成 API Key（随机生成，下发原始 key 一次，DB 中只存 `SHA-256(key)` hash，防止数据库泄露导致 key 泄露）
 - [ ] 后端：所有 API 接口校验 `Authorization: Bearer <key>` header
-- [ ] SDK：支持 `TRACESMITH_API_KEY` 环境变量
+- [ ] SDK：支持 `LIGHTSMITH_API_KEY` 环境变量
 - [ ] 前端：登录页（输入 key），key 存 localStorage
 
 ### P3.3 前端 Docker 化
