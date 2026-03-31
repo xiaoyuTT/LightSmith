@@ -125,12 +125,12 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 ### P0.4 本地存储（SQLite Writer）
 
-- [ ] 设计 SQLite schema（与 P0.1 数据模型对齐）
-- [ ] 实现同步写入：`RunWriter.save(run: Run)`
-- [ ] 异步写入：在 async 上下文中用 `loop.run_in_executor` 包装同步写入，避免阻塞事件循环（备选：引入 `aiosqlite`）
-- [ ] 创建索引：`trace_id`、`parent_run_id`、`start_time`
-- [ ] 实现树查询：`get_trace(trace_id) -> list[Run]`（一次查询取出整棵树）
-- [ ] 默认存储路径：`~/.lightsmith/traces.db`，可通过环境变量覆盖
+- [√] 设计 SQLite schema（与 P0.1 数据模型对齐）
+- [√] 实现同步写入：`RunWriter.save(run: Run)`
+- [√] 异步写入：在 async 上下文中用 `loop.run_in_executor` 包装同步写入，避免阻塞事件循环（备选：引入 `aiosqlite`）
+- [√] 创建索引：`trace_id`、`parent_run_id`、`start_time`
+- [√] 实现树查询：`get_trace(trace_id) -> list[Run]`（一次查询取出整棵树）
+- [√] 默认存储路径：`~/.lightsmith/traces.db`，可通过环境变量覆盖
 
 ### P0.5 CLI 树打印工具
 
