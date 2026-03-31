@@ -107,11 +107,11 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 ### P0.2 上下文管理器（调用树核心）
 
-- [ ] 基于 `contextvars.ContextVar` 实现线程安全的当前 run_id 栈
-- [ ] 实现 `push_run(run_id)` / `pop_run()` / `get_current_run_id()` 三个操作
-- [ ] 实现 `exec_order` 赋值：每条 trace 内按兄弟节点创建顺序自增（同一 `parent_run_id` 下从 0 开始计数），存入 `Run`
-- [ ] 验证异步场景（`asyncio`）下上下文隔离正确（不同协程不互相污染）
-- [ ] 编写测试：并发 + 异步混用场景
+- [√] 基于 `contextvars.ContextVar` 实现线程安全的当前 run_id 栈
+- [√] 实现 `push_run(run_id)` / `pop_run()` / `get_current_run_id()` 三个操作
+- [√] 实现 `exec_order` 赋值：每条 trace 内按兄弟节点创建顺序自增（同一 `parent_run_id` 下从 0 开始计数），存入 `Run`
+- [√] 验证异步场景（`asyncio`）下上下文隔离正确（不同协程不互相污染）
+- [√] 编写测试：并发 + 异步混用场景
 
 ### P0.3 `@traceable` 装饰器
 

@@ -5,7 +5,24 @@
 """
 
 from lightsmith.models import Run, RunType
+from lightsmith.context import (
+    push_run,
+    pop_run,
+    get_current_run_id,
+    get_current_trace_id,
+    next_exec_order,
+    clear_exec_order_counters,
+)
 
-__all__ = ["Run", "RunType"]
+__all__ = [
+    "Run",
+    "RunType",
+    "push_run",
+    "pop_run",
+    "get_current_run_id",
+    "get_current_trace_id",
+    "next_exec_order",
+    "clear_exec_order_counters",
+]
 
 __version__ = "0.1.0"
