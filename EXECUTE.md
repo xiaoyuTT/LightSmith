@@ -326,3 +326,127 @@ def push_run(run_id, trace_id):
 - `run_in_executor` 线程不继承协程上下文（Python 3.11），P0.3 若需支持此场景需显式参数传递。
 
 ---
+
+## P0.3 `@traceable` 装饰器
+
+**完成时间**：2026-03-31
+**状态**：[√] 已完成
+
+### 完成内容
+
+| 任务 | 产出文件 |
+|------|---------|
+| `@traceable` 装饰器（同步 + 异步） | `sdk/lightsmith/decorators.py` |
+| `set_run_writer` / `_emit_run` 写入钩子 | `sdk/lightsmith/decorators.py` |
+| `_safe_serialize` 入参序列化 + repr fallback | `sdk/lightsmith/decorators.py` |
+| `process_inputs` / `process_outputs` 用户钩子 | `sdk/lightsmith/decorators.py` |
+| 单元测试（47 个用例，全部通过） | `sdk/tests/test_decorators.py` |
+| 公开接口更新 | `sdk/lightsmith/__init__.py` |
+
+### 关键决策
+
+**写入钩子设计（`set_run_writer`）**
+
+P0.3 不绑定任何存储，装饰器在每次函数退出时调用 `_emit_run(run)`，后者转发给全局 `_run_writer`。默认为 `None`（无存储）。P0.4 只需调用 `set_run_writer(sqlite_writer.save)` 即可接入存储，无需修改装饰器任何代码。测试也通过此机制注入捕获列表，干净解耦。
+
+**`_safe_serialize` 递归序列化策略**
+
+采用 "已知类型直接返回，未知类型 try JSON → fallback repr 截断" 的分层策略：
+1. `str / int / float / bool / None` → 直接返回
+2. `dict` → 递归处理（key 强制转 str）
+3. `list / tuple` → 递归处理每个元素
+4. 其他类型 → 尝试 `json.dumps`；失败则 `repr()` 并截断至 1000 字符，后缀附加 `[truncated, type=XXX]`
+
+这样既覆盖了嵌套结构（dict 套 list 套自定义对象），又对"看起来 JSON 兼容但实际不是"的对象（如 `decimal.Decimal`）提供保险。
+
+**`@traceable` 双语法支持（带/不带括号）**
+
+通过检查第一个参数 `func` 是否为 `None` 来区分两种调用方式：
+- `@traceable`（无括号）：Python 会将被装饰函数作为第一个位置参数传入，`func is not None`，直接调用 `decorator(func)`
+- `@traceable(...)` 或 `@traceable()`（带括号）：`func is None`，返回 `decorator` 本身
+
+```python
+def traceable(func=None, *, name=None, ...):
+    def decorator(fn): ...
+    if func is not None:   # @traceable（不带括号）
+        return decorator(func)
+    return decorator       # @traceable(...) 或 @traceable()
+```
+
+**`try/except/finally` 异常捕获模式**
+
+```python
+caught_exc: Optional[BaseException] = None
+output: Any = None
+try:
+    output = fn(*args, **kwargs)   # 正常执行
+    return output
+except BaseException as exc:
+    caught_exc = exc               # 保存引用（避免 Python 3 的 except 作用域删除）
+    raise                          # 原样重抛，不吞异常
+finally:
+    pop_run()
+    _finalize_run(run, output, caught_exc, process_outputs)  # 无论成败都记录
+    _emit_run(run)
+    if is_root:
+        clear_exec_order_counters(run.trace_id)
+```
+
+Python 3 的 `except E as e` 在 except 块结束后会删除 `e` 变量（避免引用循环），但 `caught_exc = exc` 把引用赋给了另一个变量，不受此影响。`finally` 因此能安全访问 `caught_exc`。
+
+**`is_root` 在 `push_run` 之前捕获**
+
+`run.is_root` 等价于 `run.parent_run_id is None`，在 `_build_run` 中已设定。必须在 `push_run` 之前记录 `is_root`，因为 `push_run` 后当前 run 进入调用栈，此时 `get_current_run_id()` 会返回当前 run 的 id，如果之后再判断会出现误判（对这段逻辑来说无影响，但明确记录时序更安全）。
+
+### 测试覆盖范围
+
+- `TestSyncWrapper`（15 个）：Run 发射、默认名称、自定义名称、run_type、metadata、tags、入参序列化、outputs、None 返回、时间字段、根节点、`functools.wraps`、返回值透传
+- `TestAsyncWrapper`（5 个）：自动识别 async、outputs、inputs、时间字段、返回值透传
+- `TestExceptionCapture`（7 个）：error 字段包含异常类型和消息、异常向上传播、outputs 不被设置、end_time 仍设置、async 异常捕获和传播、Traceback 字符串包含
+- `TestNestedDecorators`（7 个）：parent_run_id 正确设置、trace_id 整棵树共享、兄弟节点 exec_order 自增、3 层嵌套关系完整验证、异步嵌套、独立调用 trace_id 不同、调用后上下文干净
+- `TestSerialization`（9 个）：不可序列化对象 fallback、大 repr 截断、嵌套 dict、process_inputs 钩子、process_outputs 钩子、钩子崩溃静默忽略（inputs/outputs）、钩子返回非 dict 忽略、kwargs 序列化
+- `TestDecoratorSyntax`（4 个）：无括号、空括号、全参数、writer 失败不影响业务代码
+
+### 实现细节
+
+**入参绑定：`inspect.signature` + `bind`**
+
+使用 `inspect.signature(func).bind(*args, **kwargs)` 将位置参数映射到参数名，再调用 `bound.apply_defaults()` 补全有默认值但未传入的参数。这样 `inputs` 字典总是完整的命名 dict，而非 `{"__args": [...]}` 格式。
+
+仅在绑定失败时（极端情况，如 `*args` 函数）降级为 `__args / __kwargs` 格式，保证任何函数都能追踪。
+
+**`@functools.wraps(fn)` 的作用**
+
+装饰器本质上用 `sync_wrapper` / `async_wrapper` **替换**了原函数，若不加 `wraps`，函数的元信息会丢失：
+
+```python
+@traceable
+async def my_func(x):
+    """计算结果"""
+    ...
+
+print(my_func.__name__)   # 不加 wraps → "async_wrapper"，加了 → "my_func"
+print(my_func.__doc__)    # 不加 wraps → None，           加了 → "计算结果"
+```
+
+`functools.wraps(fn)` 将 `fn` 的 `__name__`、`__qualname__`、`__doc__`、`__module__`、`__annotations__`、`__dict__` 复制到 wrapper，并额外写入 `__wrapped__ = fn`（指向原始函数的引用）。这是 Python 装饰器的惯例做法，确保反射、日志、traceback、IDE 类型提示均能看到正确的函数信息。
+
+**`process_inputs` / `process_outputs` 防御策略**
+
+两个钩子遵守相同的防御逻辑：
+1. 钩子抛异常 → 静默忽略，保留原始序列化结果
+2. 钩子返回非 `dict` → 忽略，保留原始结果
+3. 两重保护均为 try/except 包裹 + `isinstance(processed, dict)` 检查
+
+这确保用户钩子的任何问题都不会影响追踪本身，也不会影响被装饰的业务函数。
+
+**`exec_order` 计数器生命周期**
+
+根 Run（`is_root = True`）退出时，在 `finally` 块中调用 `clear_exec_order_counters(run.trace_id)`，清理该 trace 下所有 `(trace_id, parent_run_id)` 键。这解决了 P0.2 遗留的内存泄漏问题：长时间运行的进程（如 Agent 循环）中，每条 trace 结束后内存会被及时释放。
+
+### 遗留 / 待注意
+
+- `set_run_writer` 当前为同步接口；P0.4 SQLite writer 也是同步的，匹配。P1.5 HTTP writer 需要异步能力时，可在 writer 内部用 `asyncio.create_task` 或 `run_in_executor` 处理，装饰器本身不需要改动。
+- `run_in_executor` 线程不继承协程上下文（P0.2 已知约束），P0.3 未处理此场景——在 `@traceable` 函数内通过 `executor.submit` 调用另一个 `@traceable` 函数时，子 Run 的 `parent_run_id` 会为 `None`（变成独立根节点）。这是 P0 阶段的已知限制，P1+ 可通过显式传递 `run_id` 参数来解决。
+
+---

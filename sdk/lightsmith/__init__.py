@@ -13,6 +13,7 @@ from lightsmith.context import (
     next_exec_order,
     clear_exec_order_counters,
 )
+from lightsmith.decorators import traceable, set_run_writer
 
 __all__ = [
     "Run",
@@ -23,6 +24,8 @@ __all__ = [
     "get_current_trace_id",
     "next_exec_order",
     "clear_exec_order_counters",
+    "traceable",
+    "set_run_writer",
 ]
 
 __version__ = "0.1.0"

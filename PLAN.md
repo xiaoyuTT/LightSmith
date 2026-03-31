@@ -115,13 +115,13 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 ### P0.3 `@traceable` 装饰器
 
-- [ ] 实现同步函数包装：进入时创建 Run，退出时记录 outputs 和耗时
-- [ ] 实现异步函数包装（`async def` 自动识别，不需要用户区分）
-- [ ] 捕获异常：写入 `run.error`，异常正常向上传播（不吞掉）
-- [ ] 支持参数：`name`、`run_type`、`metadata`、`tags`
-- [ ] 实现入参序列化：自动处理不可序列化对象（截断/类型名 fallback）
-- [ ] 实现 `process_inputs` / `process_outputs` 自定义钩子参数
-- [ ] 验证嵌套装饰器父子关系自动建立
+- [√] 实现同步函数包装：进入时创建 Run，退出时记录 outputs 和耗时
+- [√] 实现异步函数包装（`async def` 自动识别，不需要用户区分）
+- [√] 捕获异常：写入 `run.error`，异常正常向上传播（不吞掉）
+- [√] 支持参数：`name`、`run_type`、`metadata`、`tags`
+- [√] 实现入参序列化：自动处理不可序列化对象（截断/类型名 fallback）
+- [√] 实现 `process_inputs` / `process_outputs` 自定义钩子参数
+- [√] 验证嵌套装饰器父子关系自动建立
 
 ### P0.4 本地存储（SQLite Writer）
 
