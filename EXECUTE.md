@@ -541,6 +541,30 @@ PLAN.md 给出两个选项：`run_in_executor`（包装同步代码）和 `aiosq
 3. SQLite 写入是毫秒级操作，线程池的调度开销可接受
 4. P1.5 HTTP Transport 引入真正的异步 IO 时，存储层已是 PostgreSQL，届时 `aiosqlite` 不再相关
 
+### `async_save` 方法原理
+
+```python
+async def async_save(self, run: Run) -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, self.save, run)
+```
+
+**工作原理**：
+1. **获取事件循环**：`asyncio.get_running_loop()` 获取当前协程的事件循环
+2. **提交任务到线程池**：`run_in_executor(None, self.save, run)` 将同步的 `save` 方法提交到默认线程池执行
+3. **非阻塞等待**：`await` 挂起当前协程，等待线程池任务完成后恢复
+
+**技术优势**：
+- **避免阻塞事件循环**：SQLite 写入操作在独立线程中执行
+- **API 一致性**：提供与 `save` 功能相同的异步接口
+- **使用简便**：用户可直接在异步代码中 `await` 调用
+- **保持线程安全**：继承 `save` 方法的线程安全特性
+
+**适用场景**：
+- 异步 Web 应用（如 FastAPI）中的追踪
+- 包含多个异步操作的工作流
+- 并发测试场景
+
 **`get_default_writer` 单例 + 双重检查锁（DCL）**
 
 ```python
