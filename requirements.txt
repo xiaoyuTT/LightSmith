@@ -1,0 +1,19 @@
+# LightSmith SDK 核心层依赖
+# 已完成部分：P0.1-0.4
+
+# 测试相关
+pytest
+pytest-asyncio
+
+# 异步 SQLite 支持（可选，P0.4 中提到的备选方案）
+# aiosqlite
+
+# 注意：以下为标准库，无需单独安装
+# - dataclasses (Python 3.7+)
+# - contextvars (Python 3.7+)
+# - enum
+# - sqlite3
+# - asyncio
+# - time
+# - os
+# - typing

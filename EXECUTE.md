@@ -555,6 +555,23 @@ def get_default_writer() -> RunWriter:
 
 外层 `if` 避免每次调用都争抢锁（热路径性能），内层 `if` 防止多线程同时通过外层检查时重复初始化。Python 的 GIL 虽然在某些场景下能"意外"保证单例，但 DCL 明确表达意图，对 nogil Python（3.13+）也安全。
 
+### 线程安全的必要性
+
+RunWriter 需要线程安全的主要原因：
+
+1. **SQLite 连接并发访问**：SQLite 默认单线程，虽设置 `check_same_thread=False`，但仍需外部同步
+2. **多线程环境需求**：多线程应用、线程池执行、并发测试场景
+3. **数据一致性保障**：避免连接混乱、写入冲突、事务不一致、数据损坏
+
+### 线程安全实现机制
+
+- **实例级锁**：`self._lock = threading.Lock()` 保护所有数据库操作
+- **操作级同步**：`save()` 和 `get_trace()` 均通过 `with self._lock` 串行化
+- **单例模式**：`get_default_writer()` 使用双重检查锁确保进程级唯一实例
+- **异步支持**：`async_save()` 通过 `run_in_executor` 避免阻塞事件循环
+
+这种设计确保了 SDK 在各种并发场景下都能可靠地持久化追踪数据，为后续分析和可视化提供完整准确的数据基础。
+
 **`init_local_storage` 便捷函数**
 
 ```python

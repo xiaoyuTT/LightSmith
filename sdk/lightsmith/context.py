@@ -94,7 +94,7 @@ def get_current_trace_id() -> Optional[str]:
 def next_exec_order(trace_id: str, parent_run_id: Optional[str]) -> int:
     """原子地分配下一个 exec_order 值，并将内部计数器加 1。
 
-    同一 (trace_id, parent_run_id) 下的兄弟节点按调用此函数的顺序自增，
+    同一 (trace_id, parent_run_id) 下的**兄弟节点**按调用此函数的顺序自增，
     从 0 开始。此操作线程安全，适用于多线程和多协程并发场景。
 
     Args:
