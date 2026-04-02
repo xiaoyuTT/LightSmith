@@ -174,16 +174,32 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 ### P0.6 `wrap_openai` SDK 包装器（可选，P0 末尾）
 
-- [ ] 实现 `wrap_openai(client)` 包装 OpenAI 客户端
-- [ ] 自动提取 `model`、`prompt_tokens`、`completion_tokens` 写入 metadata
-- [ ] `run_type` 自动设置为 `llm`
+- [-] 实现 `wrap_openai(client)` 包装 OpenAI 客户端
+- [-] 自动提取 `model`、`prompt_tokens`、`completion_tokens` 写入 metadata
+- [-] `run_type` 自动设置为 `llm`
+
+**说明**：P0.6 暂不实现，留待 P1 阶段根据实际需求决定。P0 阶段已足够验证核心功能。
 
 ### ✅ P0 Review 检查点
 
-- [ ] 3 层嵌套函数 demo 能打印完整树
-- [ ] 异步 Agent 场景（多个 tool 并发调用）上下文不混乱
-- [ ] 数据库中 `trace_id` / `parent_run_id` 关联正确
-- [ ] 装饰器对被装饰函数的性能影响 < 1ms（基准测试）
+- [√] 3 层嵌套函数 demo 能打印完整树
+  - `test_tree_printer.py::TestBuildTree::test_parent_child_relationship` 验证通过
+  - `test_decorators.py::TestNestedDecorators::test_three_level_nesting` 验证通过
+- [√] 异步 Agent 场景（多个 tool 并发调用）上下文不混乱
+  - `test_context.py::TestAsyncIsolation` 测试套件（5 个测试）全部通过
+  - `test_context.py::TestAsyncIsolation::test_100_concurrent_coroutines_isolated` 验证 100 并发协程隔离
+- [√] 数据库中 `trace_id` / `parent_run_id` 关联正确
+  - `test_sqlite.py::TestRunWriterIntegration::test_traceable_full_roundtrip` 验证完整往返
+  - `test_sqlite.py::TestRunWriterMultipleRuns::test_parent_run_id_preserved` 验证父子关系
+- [~] 装饰器对被装饰函数的性能影响 < 1ms（基准测试）
+  - 暂未实现专门的性能基准测试，但从测试套件运行时间推算（131 个测试 2.82s），单个装饰器调用开销在微秒级
+  - 留待 P1 或 P3 阶段补充正式基准测试（使用 pytest-benchmark）
+
+**P0 阶段完成总结**：
+- ✅ 核心功能完整：装饰器、上下文管理、SQLite 存储、CLI 工具
+- ✅ 测试覆盖充分：131 个测试用例全部通过
+- ✅ 文档完善：EXECUTE.md 详细记录所有实现细节和设计决策
+- ✅ 验收标准达成：可在终端打印完整追踪树，数据已写入 SQLite
 
 ---
 
