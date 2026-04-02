@@ -211,9 +211,9 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 ### P1.1 项目脚手架
 
-- [ ] 初始化 `backend/` 目录，配置 `pyproject.toml` 依赖（fastapi, uvicorn, sqlalchemy, alembic, pydantic）
-- [ ] 配置 `pydantic-settings`：从环境变量读取 DB_URL、PORT 等
-- [ ] 配置 Alembic 数据库迁移
+- [√] 初始化 `backend/` 目录，配置 `pyproject.toml` 依赖（fastapi, uvicorn, sqlalchemy, alembic, pydantic）
+- [√] 配置 `pydantic-settings`：从环境变量读取 DB_URL、PORT 等
+- [√] 配置 Alembic 数据库迁移
 
 ### P1.2 数据库层（SQLAlchemy）
 

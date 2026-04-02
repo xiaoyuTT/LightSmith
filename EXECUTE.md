@@ -1,950 +1,126 @@
 # LightSmith 开发执行日志
 
 > 每完成一个计划步骤后在此追加总结，记录实际完成情况、关键决策和遗留问题。
+>
+> **文档结构**：本文件为索引，详细内容按阶段分离到 `execute/` 目录下的独立文件中。
 
 ---
 
-## 整体测试原理与实现
+## 📂 文档导航
 
-本项目 SDK 层（`sdk/`）使用 **pytest** 作为测试框架。以下说明测试的工作原理，帮助理解各 P0.x 测试文件的设计。
+### [P0 · SDK 核心层](execute/EXECUTE_P0.md)
 
-### pytest 如何发现测试
+**目标**：`@traceable` 装饰器可用，嵌套调用自动建立父子关系，本地 SQLite 存储，CLI 打印追踪树
 
-pytest 按以下规则自动找到并运行测试，无需手动注册：
+**包含章节**：
+- 整体测试原理与实现（pytest、fixture、异步测试）
+- P0.1 基础数据模型
+- P0.2 上下文管理器（调用树核心）
+- P0.3 `@traceable` 装饰器
+- P0.4 本地存储（SQLite Writer）
+- P0.5 CLI 树打印工具
 
-```
-sdk/
-└── tests/
-    ├── test_models.py      ← 文件名以 test_ 开头
-    └── test_context.py
-```
-
-- **文件**：文件名以 `test_` 开头（或 `_test` 结尾）
-- **类**：类名以 `Test` 开头，且不需要继承任何基类
-- **方法/函数**：方法名以 `test_` 开头
-
-```python
-class TestRunType:              # ← pytest 识别此类
-    def test_values_are_strings(self):   # ← pytest 识别并运行此方法
-        assert RunType.LLM == "llm"
-```
-
-### assert 的魔法重写
-
-pytest 在收集测试时会重写（rewrite）`assert` 语句的字节码。当断言失败时，pytest 能自动展开表达式，打印出左右两侧的实际值，而无需手动写 `assertEqual(a, b)` 这类冗长的 API：
-
-```
-# 失败示例：assert restored.run_type is RunType.LLM
-AssertionError: assert <RunType.CHAIN: 'chain'> is <RunType.LLM: 'llm'>
-#                       ^ 左侧实际值              ^ 右侧期望值
-```
-
-这是 pytest 相比 unittest 最直接的优势——断言写法与普通 Python 代码相同。
-
-### 配置文件：`pyproject.toml`
-
-```toml
-[tool.pytest.ini_options]
-testpaths = ["tests"]       # 只在 tests/ 目录下查找测试文件
-asyncio_mode = "auto"       # pytest-asyncio 配置项（见下方异步测试说明）
-```
-
-`testpaths` 告诉 pytest 不必扫描整个项目，只看 `tests/` 目录，加快收集速度。
-
-### fixture：测试的 setup / teardown
-
-`pytest.fixture` 是 pytest 的依赖注入机制，用于在测试前后执行准备和清理工作。
-
-**`autouse=True`** 表示该 fixture 自动应用到当前文件/类的所有测试，无需在每个测试方法上手动引用：
-
-```python
-# test_context.py 中的 fixture
-@pytest.fixture(autouse=True)
-def clean_context():
-    _run_stack.set(())   # 测试前：重置 ContextVar，防止上一个测试的状态污染下一个
-    yield                # ← 此处执行测试本体
-    _run_stack.set(())   # 测试后：再次清理
-```
-
-`yield` 把 fixture 分成两段：`yield` 前是 setup，`yield` 后是 teardown。这比 `setUp` / `tearDown` 写法更紧凑，且清理逻辑与准备逻辑在同一函数内，可读性更好。
-
-**为什么测试间需要清理 ContextVar？**  
-pytest 默认在同一个进程、同一个线程内顺序运行所有测试。`ContextVar` 是进程级别的全局状态。若测试 A 调用了 `push_run()` 但没有配对 `pop_run()`，测试 B 启动时栈不为空，测试结果将不可预期。`autouse` fixture 保证每个测试都以干净状态启动。
-
-### 异步测试的处理方式
-
-`pyproject.toml` 里写了 `asyncio_mode = "auto"`，但当前 pytest-asyncio 版本（0.23）将其作为 `[tool.pytest.ini_options]` 中的选项时**未被识别**（pytest 运行时会输出 `PytestConfigWarning: Unknown config option: asyncio_mode`）。
-
-因此本项目的异步测试采用了**显式 `asyncio.run()` 包装**的方式——测试方法本身是同步的，在方法内部构造 `async def main()` 再用 `asyncio.run()` 驱动：
-
-```python
-def test_concurrent_tasks_do_not_pollute_each_other(self):
-    async def task(run_id, trace_id):
-        push_run(run_id, trace_id)
-        await asyncio.sleep(0)
-        result = get_current_run_id()
-        pop_run()
-        return result
-
-    async def main():
-        return await asyncio.gather(task("run-A", "trace-A"), task("run-B", "trace-B"))
-
-    results = asyncio.run(main())   # ← 同步入口，pytest 正常运行
-    assert results[0] == "run-A"
-```
-
-这种方式的好处：对 pytest-asyncio 版本无要求，行为完全可预期；缺点：每个异步测试需要多写一层包装函数。若后续升级 pytest-asyncio 并修复配置，可改为直接 `async def test_...()` 形式。
-
-### 如何运行测试
-
-```bash
-# 进入 SDK 目录（所有命令都在此目录下执行）
-cd sdk
-
-# 运行全部测试
-python -m pytest
-
-# 详细输出（显示每个测试名称和结果）
-python -m pytest -v
-
-# 只运行某个文件
-python -m pytest tests/test_context.py
-
-# 只运行某个测试类
-python -m pytest tests/test_context.py::TestAsyncIsolation
-
-# 只运行某个测试方法
-python -m pytest tests/test_context.py::TestAsyncIsolation::test_100_concurrent_coroutines_isolated
-```
+**状态**：✅ 已完成（2026-03-31 ~ 2026-04-02）
 
 ---
 
-## P0.1 基础数据模型
+### [P1 · 后端服务层](execute/EXECUTE_P1.md)
 
-**完成时间**：2026-03-31
-**状态**：[√] 已完成
+**目标**：FastAPI 后端可接收 SDK 上报的数据，支持 trace 查询，切换到 PostgreSQL，提供 Docker 部署
 
-### 完成内容
+**包含章节**：
+- P1.1 项目脚手架 ✅
+- P1.2 数据库层（SQLAlchemy）
+- P1.3 Run 摄入 API
+- P1.4 Trace 查询 API
+- P1.5 SDK HTTP Transport 层
+- P1.6 Docker 化
 
-| 任务 | 产出文件 |
-|------|---------|
-| `RunType` 枚举（5 种类型） | `sdk/lightsmith/models.py` |
-| `Run` dataclass（13 个字段） | `sdk/lightsmith/models.py` |
-| `to_dict()` / `from_dict()` 序列化 | `sdk/lightsmith/models.py` |
-| 单元测试（22 个用例，全部通过） | `sdk/tests/test_models.py` |
-| SDK 包初始化 + 公开接口 | `sdk/lightsmith/__init__.py` |
-| 项目构建配置 | `sdk/pyproject.toml` |
-| 子包占位文件 | `storage/__init__.py`、`integrations/__init__.py` |
-
-### 关键决策
-
-- **`RunType` 继承 `str`**：枚举值即字符串，`to_dict` 无需额外转换，前后端 JSON 互通无障碍。
-- **时间字段存 ISO 8601 字符串**（而非 `datetime` 对象）：序列化零成本，跨语言兼容，P1 后端和 P2 前端可直接使用。
-- **`from_dict` 兼容 str/enum 两种 `run_type` 输入**：防御性设计，来自 JSON 解析的字符串和已是枚举的对象都能正常处理。
-- **可变默认值全部用 `field(default_factory=...)`**：避免所有实例共享同一 `dict`/`list` 对象的经典陷阱，测试专项覆盖此场景。
-
-### 测试覆盖范围
-
-- `TestRunType`：枚举值类型、字符串反向构造、全成员完整性
-- `TestRunDefaults`：ID 唯一性、默认值正确性、可变默认值隔离
-- `TestSerialization`：全字段往返、经 JSON 字符串中转的往返、None 字段往返、run_type str/enum 两种输入兼容
-- `TestConvenienceProperties`：`duration_ms`、`is_root`、`has_error`、`__repr__`
-
-### 实现细节
-
-**`Run` dataclass 字段分组设计**
-
-字段按职责分为四组，顺序与 UI 展示层级对齐：
-
-```
-身份字段   id / trace_id / parent_run_id     → 确定节点在树中的位置
-描述字段   name / run_type                   → 决定 UI 图标和分类
-数据字段   inputs / outputs / error          → 核心业务内容，体积最大
-时间字段   start_time / end_time             → ISO 8601 UTC 字符串
-扩展字段   metadata / tags / exec_order      → 用户自定义 + 排序
-```
-
-**序列化实现要点**
-
-`to_dict` 只做一件事：将 `run_type` 枚举转为字符串（`.value`），其余字段直接赋值。这是唯一需要类型转换的字段，因为 `json.dumps` 不能直接序列化枚举对象。
-
-`from_dict` 的防御逻辑：
-```python
-raw_type = d.get("run_type", RunType.CUSTOM)
-if isinstance(raw_type, str):
-    d["run_type"] = RunType(raw_type)
-```
-先判断再转换，支持两种输入来源：
-- 来自 `json.loads` 的字符串 → 转枚举
-- 已经是枚举对象（如测试中直接构造）→ 不做处理，避免 `RunType(RunType.LLM)` 的冗余调用
-
-**`duration_ms` 属性实现**
-
-```python
-(end - start).total_seconds() * 1000
-```
-两个带时区的 `datetime` 相减得到 `timedelta`，再换算为毫秒浮点数。存储层用字符串、计算层用 `datetime`，两者通过 `datetime.fromisoformat()` 桥接，不在对象上持有 `datetime` 实例，避免序列化复杂度。
-
-**`field(default_factory=...)` 的必要性**
-
-这是 Python 中经典的"可变默认值陷阱"，分两层：
-
-*第一层：`= {}` 为何导致共享*
-
-Python 在**解析类定义时**就把默认值对象创建好并挂在类上，所有实例拿到的是同一个引用：
-
-```python
-@dataclass
-class Bad:
-    inputs: dict = {}   # 这个 {} 只创建一次
-
-a, b = Bad(), Bad()
-a.inputs["key"] = "value"
-print(b.inputs)          # {"key": "value"} ← b 被污染
-print(a.inputs is b.inputs)  # True
-```
-
-*第二层：`default_factory` 如何修复*
-
-`field(default_factory=dict)` 让 dataclass 在**每次实例化时**调用 `dict()`，各实例拥有独立对象：
-
-```python
-@dataclass
-class Good:
-    inputs: dict = field(default_factory=dict)
-
-a, b = Good(), Good()
-a.inputs["key"] = "value"
-print(b.inputs)              # {} ← 互不影响
-print(a.inputs is b.inputs)  # False
-```
-
-项目中受影响的字段分两类：
-
-| 字段 | 使用 `default_factory` 的原因 |
-|------|-------------------------------|
-| `inputs`、`metadata` | 可变 dict，共享会互相污染 |
-| `tags` | 可变 list，同上 |
-| `id`、`trace_id` | 需运行时调用 `uuid.uuid4()`，每个实例必须不同 |
-| `start_time` | 需运行时调用 `datetime.now()`，固定值在所有实例上完全相同，毫无意义 |
-
-后两类字段即使不存在"共享污染"问题，也必须用 `default_factory`——它们的值需要在**实例化的那一刻**动态生成，而非类定义时生成一次后冻结。
-
-### 遗留 / 待注意
-
-- `exec_order` 默认值为 `0`，实际赋值逻辑由 P0.2 上下文管理器负责，当前为占位。
-- `trace_id` 在顶层 Run 创建时自动生成独立 UUID；P0.2 装饰器需负责将子 Run 的 `trace_id` 对齐到根 Run。
+**状态**：🚧 进行中（P1.1 已完成）
 
 ---
 
-## P0.2 上下文管理器（调用树核心）
+### [P2 · 前端 UI 层](execute/EXECUTE_P2.md)
 
-**完成时间**：2026-03-31
-**状态**：[√] 已完成
+**目标**：React + TypeScript 单页应用，可浏览 trace 列表、点击查看追踪树、展开节点看详情
 
-### 完成内容
+**包含章节**：
+- P2.1 项目脚手架
+- P2.2 API 客户端层
+- P2.3 Trace 列表页
+- P2.4 追踪树详情页
+- P2.5 整体 UI 布局
 
-| 任务 | 产出文件 |
-|------|---------|
-| `ContextVar` 调用栈 + `push_run` / `pop_run` / `get_current_run_id` | `sdk/lightsmith/context.py` |
-| `get_current_trace_id`（P0.3 装饰器所需） | `sdk/lightsmith/context.py` |
-| `next_exec_order` 原子计数器 | `sdk/lightsmith/context.py` |
-| `clear_exec_order_counters` 内存清理 | `sdk/lightsmith/context.py` |
-| 单元测试（24 个用例，全部通过） | `sdk/tests/test_context.py` |
-| 公开接口更新 | `sdk/lightsmith/__init__.py` |
-
-### 关键决策
-
-- **调用栈用不可变 `tuple` 存储**：每次 `push_run` / `pop_run` 都 `set` 一个新 `tuple`，利用 `ContextVar` 的写时复制（copy-on-write）语义，asyncio 任务和线程自动得到隔离。不需要 Token / reset 机制，实现简单且无泄漏。
-
-- **exec_order 计数器用 `dict + threading.Lock` 而非 `ContextVar`**：exec_order 需要"跨协程共享"——同一 parent 下的兄弟节点无论在哪个协程创建，都应全局有序。`ContextVar` 的隔离语义反而有害，因此用普通 dict 加锁实现原子自增。
-
-- **额外暴露 `get_current_trace_id`**：P0.3 装饰器在创建子 Run 时需要将 `trace_id` 对齐到根 Run，此函数从调用栈顶读取，免去显式传参。
-
-### 测试覆盖范围
-
-- `TestBasicStack`（9 个）：空栈返回 None、push/pop LIFO 顺序、多次 pop 空栈无异常、trace_id 跟随栈顶
-- `TestExecOrder`（7 个）：从 0 开始自增、不同 parent 独立计数、不同 trace 独立计数、clear 后重置、20 线程并发无重复
-- `TestAsyncIsolation`（5 个）：并发任务互不污染、子任务继承父任务快照、子任务 push 不影响父任务、100 协程全隔离、5 层深度嵌套
-- `TestThreadIsolation`（2 个）：10 线程独立栈、主线程不受子线程影响
-- `TestAsyncThreadMix`（1 个）：`run_in_executor` 线程上下文行为验证
-
-### 实现细节
-
-**调用栈不可变 tuple 的隔离语义**
-
-隔离效果是 **Python `contextvars` 内置能力** 与 **代码中不可变 tuple 设计** 共同作用的结果，各自负责一半：
-
-*第一层：Python `contextvars` + `asyncio` 提供隔离的"门"*
-
-`asyncio.create_task()` 创建子任务时，会自动调用 `contextvars.copy_context()`，把当前任务的上下文**浅拷贝**一份交给子任务。之后子任务内任何 `ContextVar.set(...)` 调用，只修改子任务自己的绑定，父任务的绑定不受影响。这个机制由 Python 运行时保证，代码里无需额外设定。
-
-```
-主协程                        子任务（asyncio.create_task）
-────────────────────────      ──────────────────────────────────
-_run_stack = ()
-push("root")
-_run_stack = (("root","t1"),)
-  │
-  ├─ create_task(child)   ←── copy_context() 快照：子任务起点 = (("root","t1"),)
-  │                              push("child")  → _run_stack.set(新 tuple)
-  │                              _run_stack = (("root","t1"),("child","t1"),)
-  │                              ... 子任务内的 set 只改子任务自己的绑定 ...
-  │                              pop()
-  │
-  └─ 协程继续，_run_stack 仍是 (("root","t1"),)
-```
-
-*第二层：不可变 tuple 确保永远走这扇"门"*
-
-`copy_context()` 是浅拷贝——只拷贝"ContextVar → 值"的映射，不拷贝值本身。若存的是**可变 list**，父子任务会拿到指向同一个 list 对象的引用，`append()` 直接修改对象会绕过 ContextVar 的隔离机制：
-
-```python
-# 危险：可变 list + 原地修改（子任务 append 会污染父任务）
-def push_run_bad(run_id, trace_id):
-    _run_stack.get().append((run_id, trace_id))  # 修改共享对象，隔离被穿透
-
-# 正确：不可变 tuple + set()（每次生成新对象，隔离正常工作）
-def push_run(run_id, trace_id):
-    _run_stack.set(_run_stack.get() + ((run_id, trace_id),))  # 走 ContextVar 正规路径
-```
-
-| 能力来源 | 负责的事 |
-|---------|---------|
-| Python `contextvars` + `asyncio.create_task()` | 子任务得到上下文快照，`set()` 只影响当前任务 |
-| 代码中使用不可变 tuple | 强制每次修改都走 `set()`，无法意外绕过隔离机制 |
-
-**为什么 `next_exec_order` 必须用 `threading.Lock` 而非 `ContextVar`**
-
-调用栈（`_run_stack`）和 `exec_order` 计数器需要**截然相反**的语义：
-
-| 状态 | 目标 | 工具 |
-|------|------|------|
-| `_run_stack` 调用栈 | **隔离**：每个协程/线程走自己的调用路径 | `ContextVar` |
-| `exec_order` 计数器 | **共享**：兄弟节点从同一个数字往上数 | `dict + threading.Lock` |
-
-考虑下面这个并发场景：
-
-```python
-@traceable
-async def parent():
-    await asyncio.gather(child_a(), child_b())   # 两个兄弟节点并发启动
-```
-
-`child_a` 和 `child_b` 同属 `parent` 下的兄弟节点，应各自分到 `exec_order=0` 和 `exec_order=1`。
-
-**如果用 `ContextVar` 存计数器：**
-
-`asyncio.create_task()` 在创建子任务时会自动调用 `copy_context()`，每个子任务拿到一份**独立的计数器副本**，两个子任务各自从 0 开始计数——最终 `child_a` 和 `child_b` 都得到 `exec_order=0`，编号冲突。
-
-```
-create_task(child_a)  → 复制上下文副本，计数器=0 → child_a 取得 0，写回自己的副本
-create_task(child_b)  → 复制上下文副本，计数器=0 → child_b 取得 0，写回自己的副本
-结果：两个兄弟都是 exec_order=0 ❌
-```
-
-**用全局 `dict + threading.Lock`：**
-
-所有协程和线程访问的是同一个 `_exec_order_counters` dict，`with _exec_order_lock` 保证读-改-写原子完成——一个拿到 0，计数器变成 1；另一个再来拿到 1，顺序由实际调度顺序决定，唯一且正确。
-
-```
-child_a 进入 with lock → 读到 0 → 写回 1 → 释放锁 → exec_order=0
-child_b 进入 with lock → 读到 1 → 写回 2 → 释放锁 → exec_order=1
-结果：兄弟节点 exec_order 唯一有序 ✅
-```
-
-**一句话总结**：`ContextVar` 的隔离特性让调用栈在协程间互不干扰，但这个隔离对于需要"全局共享计数"的 `exec_order` 来说反而是破坏性的。两种工具服务于两种相反的并发需求，各司其职。
+**状态**：⏳ 待开始
 
 ---
 
-**`run_in_executor` 的重要已知限制（Python 3.11）**
+### [P3 · 完善打磨](execute/EXECUTE_P3.md)
 
-`loop.run_in_executor` 启动的线程以**默认值**（空栈）开始，不继承调用协程的 ContextVar 状态。这是 Python 3.11 的实际行为（不同于部分文档的描述）。
+**目标**：补齐生产可用性：搜索、过滤、鉴权、前端 Docker 化、接入文档
 
-**后果**：P0.3 装饰器若要支持 `ThreadPoolExecutor` 场景（用户在装饰器内部调用 `executor.submit`），需要通过函数参数显式传递 `run_id` 和 `trace_id`，而不能依赖上下文自动传播。此行为已通过测试记录，作为已知设计约束留给 P0.3 处理。
+**包含章节**：
+- P3.1 搜索与高级过滤
+- P3.2 API Key 鉴权（轻量版）
+- P3.3 前端 Docker 化
+- P3.4 时间轴甘特图
+- P3.5 SDK 接入文档
 
-### 遗留 / 待注意
-
-- `exec_order` 计数器在根 Run 结束时需调用 `clear_exec_order_counters(trace_id)` 清理，防止长期运行进程内存泄漏；P0.3 装饰器负责在根 Run 的 `finally` 块中调用。
-- `run_in_executor` 线程不继承协程上下文（Python 3.11），P0.3 若需支持此场景需显式参数传递。
-
----
-
-## P0.3 `@traceable` 装饰器
-
-**完成时间**：2026-03-31
-**状态**：[√] 已完成
-
-### 完成内容
-
-| 任务 | 产出文件 |
-|------|---------|
-| `@traceable` 装饰器（同步 + 异步） | `sdk/lightsmith/decorators.py` |
-| `set_run_writer` / `_emit_run` 写入钩子 | `sdk/lightsmith/decorators.py` |
-| `_safe_serialize` 入参序列化 + repr fallback | `sdk/lightsmith/decorators.py` |
-| `process_inputs` / `process_outputs` 用户钩子 | `sdk/lightsmith/decorators.py` |
-| 单元测试（47 个用例，全部通过） | `sdk/tests/test_decorators.py` |
-| 公开接口更新 | `sdk/lightsmith/__init__.py` |
-
-### 关键决策
-
-**写入钩子设计（`set_run_writer`）**
-
-P0.3 不绑定任何存储，装饰器在每次函数退出时调用 `_emit_run(run)`，后者转发给全局 `_run_writer`。默认为 `None`（无存储）。P0.4 只需调用 `set_run_writer(sqlite_writer.save)` 即可接入存储，无需修改装饰器任何代码。测试也通过此机制注入捕获列表，干净解耦。
-
-**`_safe_serialize` 递归序列化策略**
-
-采用 "已知类型直接返回，未知类型 try JSON → fallback repr 截断" 的分层策略：
-1. `str / int / float / bool / None` → 直接返回
-2. `dict` → 递归处理（key 强制转 str）
-3. `list / tuple` → 递归处理每个元素
-4. 其他类型 → 尝试 `json.dumps`；失败则 `repr()` 并截断至 1000 字符，后缀附加 `[truncated, type=XXX]`
-
-这样既覆盖了嵌套结构（dict 套 list 套自定义对象），又对"看起来 JSON 兼容但实际不是"的对象（如 `decimal.Decimal`）提供保险。
-
-**`@traceable` 双语法支持（带/不带括号）**
-
-通过检查第一个参数 `func` 是否为 `None` 来区分两种调用方式：
-- `@traceable`（无括号）：Python 会将被装饰函数作为第一个位置参数传入，`func is not None`，直接调用 `decorator(func)`
-- `@traceable(...)` 或 `@traceable()`（带括号）：`func is None`，返回 `decorator` 本身
-
-```python
-def traceable(func=None, *, name=None, ...):
-    def decorator(fn): ...
-    if func is not None:   # @traceable（不带括号）
-        return decorator(func)
-    return decorator       # @traceable(...) 或 @traceable()
-```
-
-**`try/except/finally` 异常捕获模式**
-
-```python
-caught_exc: Optional[BaseException] = None
-output: Any = None
-try:
-    output = fn(*args, **kwargs)   # 正常执行
-    return output
-except BaseException as exc:
-    caught_exc = exc               # 保存引用（避免 Python 3 的 except 作用域删除）
-    raise                          # 原样重抛，不吞异常
-finally:
-    pop_run()
-    _finalize_run(run, output, caught_exc, process_outputs)  # 无论成败都记录
-    _emit_run(run)
-    if is_root:
-        clear_exec_order_counters(run.trace_id)
-```
-
-Python 3 的 `except E as e` 在 except 块结束后会删除 `e` 变量（避免引用循环），但 `caught_exc = exc` 把引用赋给了另一个变量，不受此影响。`finally` 因此能安全访问 `caught_exc`。
-
-**`is_root` 在 `push_run` 之前捕获**
-
-`run.is_root` 等价于 `run.parent_run_id is None`，在 `_build_run` 中已设定。必须在 `push_run` 之前记录 `is_root`，因为 `push_run` 后当前 run 进入调用栈，此时 `get_current_run_id()` 会返回当前 run 的 id，如果之后再判断会出现误判（对这段逻辑来说无影响，但明确记录时序更安全）。
-
-### 测试覆盖范围
-
-- `TestSyncWrapper`（15 个）：Run 发射、默认名称、自定义名称、run_type、metadata、tags、入参序列化、outputs、None 返回、时间字段、根节点、`functools.wraps`、返回值透传
-- `TestAsyncWrapper`（5 个）：自动识别 async、outputs、inputs、时间字段、返回值透传
-- `TestExceptionCapture`（7 个）：error 字段包含异常类型和消息、异常向上传播、outputs 不被设置、end_time 仍设置、async 异常捕获和传播、Traceback 字符串包含
-- `TestNestedDecorators`（7 个）：parent_run_id 正确设置、trace_id 整棵树共享、兄弟节点 exec_order 自增、3 层嵌套关系完整验证、异步嵌套、独立调用 trace_id 不同、调用后上下文干净
-- `TestSerialization`（9 个）：不可序列化对象 fallback、大 repr 截断、嵌套 dict、process_inputs 钩子、process_outputs 钩子、钩子崩溃静默忽略（inputs/outputs）、钩子返回非 dict 忽略、kwargs 序列化
-- `TestDecoratorSyntax`（4 个）：无括号、空括号、全参数、writer 失败不影响业务代码
-
-### 实现细节
-
-**入参绑定：`inspect.signature` + `bind`**
-
-使用 `inspect.signature(func).bind(*args, **kwargs)` 将位置参数映射到参数名，再调用 `bound.apply_defaults()` 补全有默认值但未传入的参数。这样 `inputs` 字典总是完整的命名 dict，而非 `{"__args": [...]}` 格式。
-
-仅在绑定失败时（极端情况，如 `*args` 函数）降级为 `__args / __kwargs` 格式，保证任何函数都能追踪。
-
-**`@functools.wraps(fn)` 的作用**
-
-装饰器本质上用 `sync_wrapper` / `async_wrapper` **替换**了原函数，若不加 `wraps`，函数的元信息会丢失：
-
-```python
-@traceable
-async def my_func(x):
-    """计算结果"""
-    ...
-
-print(my_func.__name__)   # 不加 wraps → "async_wrapper"，加了 → "my_func"
-print(my_func.__doc__)    # 不加 wraps → None，           加了 → "计算结果"
-```
-
-`functools.wraps(fn)` 将 `fn` 的 `__name__`、`__qualname__`、`__doc__`、`__module__`、`__annotations__`、`__dict__` 复制到 wrapper，并额外写入 `__wrapped__ = fn`（指向原始函数的引用）。这是 Python 装饰器的惯例做法，确保反射、日志、traceback、IDE 类型提示均能看到正确的函数信息。
-
-**`process_inputs` / `process_outputs` 防御策略**
-
-两个钩子遵守相同的防御逻辑：
-1. 钩子抛异常 → 静默忽略，保留原始序列化结果
-2. 钩子返回非 `dict` → 忽略，保留原始结果
-3. 两重保护均为 try/except 包裹 + `isinstance(processed, dict)` 检查
-
-这确保用户钩子的任何问题都不会影响追踪本身，也不会影响被装饰的业务函数。
-
-**`exec_order` 计数器生命周期**
-
-根 Run（`is_root = True`）退出时，在 `finally` 块中调用 `clear_exec_order_counters(run.trace_id)`，清理该 trace 下所有 `(trace_id, parent_run_id)` 键。这解决了 P0.2 遗留的内存泄漏问题：长时间运行的进程（如 Agent 循环）中，每条 trace 结束后内存会被及时释放。
-
-### 遗留 / 待注意
-
-- `set_run_writer` 当前为同步接口；P0.4 SQLite writer 也是同步的，匹配。P1.5 HTTP writer 需要异步能力时，可在 writer 内部用 `asyncio.create_task` 或 `run_in_executor` 处理，装饰器本身不需要改动。
-- `run_in_executor` 线程不继承协程上下文（P0.2 已知约束），P0.3 未处理此场景——在 `@traceable` 函数内通过 `executor.submit` 调用另一个 `@traceable` 函数时，子 Run 的 `parent_run_id` 会为 `None`（变成独立根节点）。这是 P0 阶段的已知限制，P1+ 可通过显式传递 `run_id` 参数来解决。
+**状态**：⏳ 待开始
 
 ---
 
-## P0.4 本地存储（SQLite Writer）
+### [P4 · 进阶功能](execute/EXECUTE_P4.md)
 
-**完成时间**：2026-03-31
-**状态**：[√] 已完成
+**目标**：可选的进阶功能，按实际需求选做
 
-### 完成内容
+**包含章节**：
+- Token 成本估算
+- Trace 对比
+- Webhook 通知
+- 数据导出
+- Prometheus metrics
+- TypeScript SDK
 
-| 任务 | 产出文件 |
-|------|---------|
-| SQLite schema（DDL + 3 个索引） | `sdk/lightsmith/storage/sqlite.py` |
-| `RunWriter.save`（同步写入，线程安全） | `sdk/lightsmith/storage/sqlite.py` |
-| `RunWriter.async_save`（`run_in_executor` 包装） | `sdk/lightsmith/storage/sqlite.py` |
-| `RunWriter.get_trace`（一次查询取出整棵树） | `sdk/lightsmith/storage/sqlite.py` |
-| `get_default_writer`（进程级单例） | `sdk/lightsmith/storage/sqlite.py` |
-| `init_local_storage` 便捷函数 | `sdk/lightsmith/__init__.py` |
-| storage 子包导出 | `sdk/lightsmith/storage/__init__.py` |
-| 单元测试（18 个用例，全部通过） | `sdk/tests/test_sqlite.py` |
-
-### 关键决策
-
-**JSON 列存储 dict / list 字段**
-
-`inputs`、`outputs`、`metadata`、`tags` 四个字段在 SQLite 中以 JSON 文本存储（`json.dumps` / `json.loads`）。
-原因：SQLite 没有原生 JSON 列类型（区别于 PostgreSQL 的 `jsonb`），文本 JSON 是 P0 阶段唯一零依赖的方案。
-P1.2 迁移到 SQLAlchemy + PostgreSQL 时，这些列改为 `JSONB` 类型，ORM 自动处理序列化，此处的 `json.dumps/loads` 由 SQLAlchemy 的类型系统接管。
-
-**`INSERT OR IGNORE` 幂等性**
-
-写入使用 `INSERT OR IGNORE`，同一 `run.id` 重复写入时静默跳过，首次写入结果不被覆盖。
-这与 P1.3 后端 `POST /api/runs/batch` 设计的幂等性要求（"以首次为准"）保持一致。
-P1 PostgreSQL 版本将改用 `ON CONFLICT DO NOTHING`，语义完全对等。
-
-**`threading.Lock` 保护单一连接 vs 连接池**
-
-`RunWriter` 持有一个 `sqlite3.Connection`（`check_same_thread=False`），所有读写操作通过 `threading.Lock` 串行化。
-选择理由：P0 场景中 SQLite 写入并发量极低，单连接 + 锁的方案零依赖、零配置、行为可预期。
-连接池（如 `concurrent.futures.ThreadPoolExecutor` + 每线程一个连接）仅在高并发 P1 场景中才有意义，届时后端直接切 PostgreSQL + SQLAlchemy 连接池，P0 的实现不需要演进。
-
-**`async_save` 选择 `run_in_executor` 而非 `aiosqlite`**
-
-PLAN.md 给出两个选项：`run_in_executor`（包装同步代码）和 `aiosqlite`（原生异步 SQLite）。
-选择 `run_in_executor` 的原因：
-1. 零新依赖（`pyproject.toml` 中 `dependencies = []` 维持不变）
-2. 与 P0.2 中已记录的"run_in_executor 不继承协程上下文"一致，行为可预期
-3. SQLite 写入是毫秒级操作，线程池的调度开销可接受
-4. P1.5 HTTP Transport 引入真正的异步 IO 时，存储层已是 PostgreSQL，届时 `aiosqlite` 不再相关
-
-### `async_save` 方法原理
-
-```python
-async def async_save(self, run: Run) -> None:
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, self.save, run)
-```
-
-**工作原理**：
-1. **获取事件循环**：`asyncio.get_running_loop()` 获取当前协程的事件循环
-2. **提交任务到线程池**：`run_in_executor(None, self.save, run)` 将同步的 `save` 方法提交到默认线程池执行
-3. **非阻塞等待**：`await` 挂起当前协程，等待线程池任务完成后恢复
-
-**技术优势**：
-- **避免阻塞事件循环**：SQLite 写入操作在独立线程中执行
-- **API 一致性**：提供与 `save` 功能相同的异步接口
-- **使用简便**：用户可直接在异步代码中 `await` 调用
-- **保持线程安全**：继承 `save` 方法的线程安全特性
-
-**适用场景**：
-- 异步 Web 应用（如 FastAPI）中的追踪
-- 包含多个异步操作的工作流
-- 并发测试场景
-
-**`get_default_writer` 单例 + 双重检查锁（DCL）**
-
-```python
-def get_default_writer() -> RunWriter:
-    global _default_writer
-    if _default_writer is None:           # 快速路径（无锁）
-        with _default_writer_lock:
-            if _default_writer is None:   # 确保只初始化一次
-                _default_writer = RunWriter()
-    return _default_writer
-```
-
-外层 `if` 避免每次调用都争抢锁（热路径性能），内层 `if` 防止多线程同时通过外层检查时重复初始化。Python 的 GIL 虽然在某些场景下能"意外"保证单例，但 DCL 明确表达意图，对 nogil Python（3.13+）也安全。
-
-### 线程安全的必要性
-
-RunWriter 需要线程安全的主要原因：
-
-1. **SQLite 连接并发访问**：SQLite 默认单线程，虽设置 `check_same_thread=False`，但仍需外部同步
-2. **多线程环境需求**：多线程应用、线程池执行、并发测试场景
-3. **数据一致性保障**：避免连接混乱、写入冲突、事务不一致、数据损坏
-
-### 线程安全实现机制
-
-- **实例级锁**：`self._lock = threading.Lock()` 保护所有数据库操作
-- **操作级同步**：`save()` 和 `get_trace()` 均通过 `with self._lock` 串行化
-- **单例模式**：`get_default_writer()` 使用双重检查锁确保进程级唯一实例
-- **异步支持**：`async_save()` 通过 `run_in_executor` 避免阻塞事件循环
-
-这种设计确保了 SDK 在各种并发场景下都能可靠地持久化追踪数据，为后续分析和可视化提供完整准确的数据基础。
-
-**`init_local_storage` 便捷函数**
-
-```python
-import lightsmith as ls
-ls.init_local_storage()   # 一行开启本地存储
-
-@ls.traceable
-def my_func(x):
-    return x * 2
-```
-
-`init_local_storage` 创建一个**新的** `RunWriter`（而非复用 `get_default_writer` 的单例），便于测试和多数据库场景。它调用 `set_run_writer(writer.save)` 将写入钩子注入装饰器，无需修改任何追踪代码。返回 `RunWriter` 实例供调用方直接调用 `get_trace` 等方法。
-
-### SQLite Schema 设计
-
-```sql
-CREATE TABLE runs (
-    id            TEXT PRIMARY KEY,       -- UUID4 字符串
-    trace_id      TEXT NOT NULL,          -- 整棵树共享
-    parent_run_id TEXT,                   -- NULL = 根节点
-    name          TEXT NOT NULL,
-    run_type      TEXT NOT NULL,          -- 枚举字符串值
-    inputs        TEXT NOT NULL DEFAULT '{}',   -- JSON
-    outputs       TEXT,                          -- JSON，NULL = 未完成
-    error         TEXT,                          -- NULL = 无错误
-    start_time    TEXT NOT NULL,          -- ISO 8601 UTC
-    end_time      TEXT,                   -- NULL = 仍在运行
-    metadata      TEXT NOT NULL DEFAULT '{}',   -- JSON
-    tags          TEXT NOT NULL DEFAULT '[]',   -- JSON
-    exec_order    INTEGER NOT NULL DEFAULT 0
-);
-
--- P1.4 GET /api/traces?trace_id=X 和 get_trace() 的主要访问模式
-CREATE INDEX idx_runs_trace_id      ON runs (trace_id);
--- 树重建时按 parent_run_id 分组
-CREATE INDEX idx_runs_parent_run_id ON runs (parent_run_id);
--- P1.4 按时间范围过滤的基础
-CREATE INDEX idx_runs_start_time    ON runs (start_time);
-```
-
-字段与 `Run` dataclass 一一对应，`DDL` 用 `executescript` 在连接初始化时执行，`CREATE TABLE IF NOT EXISTS` 和 `CREATE INDEX IF NOT EXISTS` 保证幂等性，多次初始化安全。
-
-### 测试覆盖范围
-
-- `TestRunWriterBasic`（6 个）：save + get_trace 基础、全字段往返无损、None 可选字段、error 字段、幂等性（重复写入）、不存在 trace 返回空列表
-- `TestRunWriterMultipleRuns`（4 个）：同 trace 多条 Run、exec_order 升序排列、不同 trace 隔离、parent_run_id 保留
-- `TestRunWriterAsync`（2 个）：async_save 写入结果一致、10 协程并发无丢失
-- `TestRunWriterIntegration`（3 个）：@traceable + RunWriter 端到端、3 层嵌套树完整验证（trace_id 共享 + 父子关系 + 3 条记录）、异常 Run 被持久化
-- `TestDefaultPath`（3 个）：环境变量覆盖、默认路径为 ~/.lightsmith/traces.db、自动创建嵌套目录
-
-### 架构图：P0.4 数据流
-
-```
-@traceable 函数退出
-       │
-       ▼
-  _emit_run(run)
-  ────────────────────────────────────────────────────────────
-  decorators.py: _run_writer(run)           ← set_run_writer 注入的函数
-       │
-       ▼
-  RunWriter.save(run)                       ← 同步路径
-  (or async_save → run_in_executor → save)  ← 异步路径
-       │
-       ├── _run_to_row(run)                 ← Run → SQL 参数 tuple（JSON 序列化）
-       ├── _lock.acquire()
-       ├── conn.execute(INSERT OR IGNORE)
-       ├── conn.commit()
-       └── _lock.release()
-                              ↓
-                      SQLite 文件
-              ~/.lightsmith/traces.db
-                      (或环境变量指定路径)
-                              ↓
-       get_trace(trace_id) ──► SELECT ... WHERE trace_id = ? ORDER BY exec_order
-                              ↓
-                    list[Run]（整棵调用树）
-```
-
-### 接口契约（供 P0.5 和 P1.2 使用）
-
-P0.5 CLI 工具直接调用 `RunWriter.get_trace(trace_id)` 拿到 `list[Run]`，用 `parent_run_id` 重建树结构后打印。
-
-P1.2 将此 SQLite schema 迁移为 SQLAlchemy ORM 模型时，字段名和类型保持不变；`JSONB` 类型替代 JSON 文本列，但 `Run` dataclass 的序列化/反序列化逻辑不受影响。
-
-### 遗留 / 待注意
-
-- SQLite WAL 模式未启用：P0 场景单进程写入，默认日志模式（DELETE）足够。若需多进程并发写入（P1 之前不会出现），可在 `__init__` 中 `conn.execute("PRAGMA journal_mode=WAL")`。
-- `RunWriter` 未注册 `atexit` 钩子自动 `close`：Python 进程退出时 SQLite 连接和文件句柄会被操作系统回收，P0 阶段可接受。P1.5 的 HTTP `BatchBuffer` 需要 `atexit` 确保数据 flush，届时一并处理。
-- `get_default_writer` 返回的单例在测试中需要小心——测试间共享同一个数据库文件（`~/.lightsmith/traces.db`），会互相污染。`test_sqlite.py` 通过 `tmp_writer` fixture 为每个测试创建独立临时数据库，避免了这个问题。
+**状态**：⏳ 暂不推进
 
 ---
 
-## P0.5 CLI 树打印工具
+## 📊 整体进度
 
-**完成时间**：2026-04-02
-**状态**：[√] 已完成
-
-### 完成内容
-
-| 任务 | 产出文件 |
-|------|---------|
-| `tree_printer.py` CLI 工具（树构建 + 格式化打印） | `sdk/cli/tree_printer.py` |
-| `get_last_trace_id` 查询最近 trace | `sdk/cli/tree_printer.py` |
-| CLI 参数解析（`--trace-id` / `--last`） | `sdk/cli/tree_printer.py` |
-| 跨平台 UTF-8 输出（safe_print） | `sdk/cli/tree_printer.py` |
-| cli 子包初始化 | `sdk/cli/__init__.py` |
-| 单元测试（20 个用例，全部通过） | `sdk/tests/test_tree_printer.py` |
-
-### 关键决策
-
-**树构建：两遍扫描算法**
-
-`build_tree` 采用两遍扫描构建调用树：
-- 第一遍：为所有 Run 创建 `TreeNode` 并存入 `node_map: dict[str, TreeNode]`
-- 第二遍：根据 `parent_run_id` 将子节点挂到父节点的 `children` 列表下
-
-时间复杂度 O(n)，空间复杂度 O(n)。相比递归构建，两遍扫描在处理乱序输入时更稳定，且不依赖 `exec_order` 的正确性（虽然 `RunWriter.get_trace` 已按 `exec_order` 排序，但这使 `build_tree` 成为独立的、可测试的纯函数）。
-
-**节点格式化：图标映射 + ANSI 颜色**
-
-节点行格式：`[图标] 函数名  耗时ms  [ERROR]`
-
-| RunType | 图标 | 语义 |
-|---------|------|------|
-| CHAIN   | 🔗 | 业务逻辑链 |
-| LLM     | 🤖 | 大模型调用 |
-| TOOL    | 🔧 | 工具/函数调用 |
-| AGENT   | 🧠 | 自主决策 Agent |
-| CUSTOM  | ⚙️ | 自定义类型 |
-
-错误节点整行用 ANSI 红色（`\033[91m`）标记，并附加 `[ERROR]` 标签。耗时未完成时显示灰色 `...`。
-
-**`safe_print`：跨平台 Unicode 输出**
-
-Windows 下的 `cmd.exe` 和 `PowerShell` 默认使用 GBK 编码，无法直接输出 emoji。直接修改 `sys.stdout` 会破坏 pytest 的输出捕获机制，因此采用 `safe_print` 函数，在遇到 `UnicodeEncodeError` 时将无法编码的字符替换为 `?`（使用 `errors="replace"`）。
-
-```python
-def safe_print(text: str, file=None) -> None:
-    try:
-        print(text, file=file)
-    except UnicodeEncodeError:
-        safe_text = text.encode(file.encoding, errors="replace").decode(file.encoding)
-        print(safe_text, file=file)
-```
-
-这样在 UTF-8 终端中正常显示 emoji，在 GBK 终端中降级为 `?`，保证功能不中断。测试也相应调整，接受两种输出格式。
-
-**`get_last_trace_id`：直接操作 RunWriter 内部连接**
-
-```python
-def get_last_trace_id(writer: RunWriter) -> Optional[str]:
-    with writer._lock:
-        cursor = writer._conn.execute("""
-            SELECT trace_id
-            FROM   runs
-            WHERE  parent_run_id IS NULL
-            ORDER  BY start_time DESC
-            LIMIT  1
-        """)
-        row = cursor.fetchone()
-        return row["trace_id"] if row else None
-```
-
-直接访问 `writer._conn`（受 `_lock` 保护），查询最近的根节点（`parent_run_id IS NULL`）。这是 P0.5 唯一需要的"非标准查询"，不值得为此在 `RunWriter` 中增加公开 API（`get_trace` 已足够覆盖 P1 查询需求）。`_` 前缀表明此处绕过抽象层，测试时需小心线程安全。
-
-### 测试覆盖范围
-
-- `TestBuildTree`（4 个）：空列表、单根节点、父子关系、3 层嵌套
-- `TestFormatting`（5 个）：耗时格式化（有/无 end_time）、节点行格式化（正常/错误）、所有 RunType 图标
-- `TestDatabaseIntegration`（4 个）：get_last_trace_id（空库/单个/多个 trace）、从数据库构建树
-- `TestCLI`（4 个）：`--last` 参数、`--trace-id` 参数、不存在的 trace、空数据库错误处理
-- `TestEdgeCases`（3 个）：错误节点打印、深层嵌套（10 层）、多兄弟节点（5 个）
-
-### 实现细节
-
-**树打印：递归 + 前缀累积**
-
-```python
-def print_tree(node: TreeNode, prefix: str = "", is_last: bool = True) -> None:
-    connector = "└── " if is_last else "├── "
-    
-    if prefix == "":
-        safe_print(format_node_line(node.run))  # 根节点无前缀
-    else:
-        safe_print(prefix + connector + format_node_line(node.run))
-    
-    child_prefix = prefix + ("    " if is_last else "│   ")
-    for i, child in enumerate(node.children):
-        is_last_child = (i == len(node.children) - 1)
-        print_tree(child, child_prefix, is_last_child)
-```
-
-使用 Unicode 盒绘制字符（`├──`、`└──`、`│`）构建树形结构。`prefix` 累积父节点的缩进线条，`is_last` 决定当前节点用 `└` 还是 `├`。
-
-**CLI 参数：互斥参数组**
-
-```python
-group = parser.add_mutually_exclusive_group(required=True)
-group.add_argument("--trace-id", type=str, help="...")
-group.add_argument("--last", action="store_true", help="...")
-```
-
-`required=True` 确保用户必须指定其中一个参数，`mutually_exclusive_group` 保证两者不能同时使用。这比手动检查参数冲突更清晰，argparse 会自动生成错误提示。
-
-**环境变量支持：无需显式参数**
-
-CLI 工具通过 `RunWriter()` 自动读取 `LIGHTSMITH_DB_PATH` 环境变量，无需在命令行传递数据库路径。这与 P0.4 的设计保持一致，减少用户认知负担。测试中通过 `monkeypatch.setenv` 注入临时路径，避免污染全局数据库。
-
-**摘要行：trace 统计信息**
-
-打印完树后，追加一行灰色摘要：
-
-```
-───────────────────────────────────────
-节点数: 4  |  错误: 0  |  总耗时: 100.0ms
-```
-
-从根节点读取 `duration_ms`（已包含整棵树的总耗时），统计 `has_error` 节点数。这给用户快速的定性认知，无需逐节点检查。
-
-### 架构图：P0.5 数据流
-
-```
-用户命令行
-       │
-       ├─ python -m cli.tree_printer --last
-       └─ python -m cli.tree_printer --trace-id <uuid>
-                              ↓
-                         main() 入口
-                              ↓
-       ┌─────────────────────┴─────────────────────┐
-       │                                           │
-       ▼                                           ▼
-  --last 模式                              --trace-id 模式
-       │                                           │
-       ├─ get_last_trace_id(writer)                │
-       │    ├─ SELECT trace_id ... ORDER BY start_time DESC LIMIT 1
-       │    └─ 返回最近根节点的 trace_id            │
-       │                                           │
-       └───────────────┬───────────────────────────┘
-                       ↓
-              writer.get_trace(trace_id)
-                       ↓
-                  list[Run]（已按 exec_order 排序）
-                       ↓
-                 build_tree(runs)
-                       ↓
-        两遍扫描：id → TreeNode 映射 + 父子关联
-                       ↓
-                   TreeNode（根节点）
-                       ↓
-                 print_tree(root)
-                       ↓
-        递归打印 + 前缀累积 + ANSI 颜色 + safe_print
-                       ↓
-                   终端输出
-```
-
-### 使用示例
-
-```bash
-# 安装 SDK（开发模式）
-cd sdk
-pip install -e .
-
-# 运行带追踪的脚本
-python your_script.py
-
-# 查看最近一条 trace
-python -m cli.tree_printer --last
-
-# 查看指定 trace
-python -m cli.tree_printer --trace-id <trace_id>
-
-# 指定数据库路径
-LIGHTSMITH_DB_PATH=/path/to/custom.db python -m cli.tree_printer --last
-```
-
-输出示例：
-
-```
-最近一条 trace: 3f7c9a2b-1d4e-4c8b-9f3a-2e5c6b8d9f0a
-
-🔗 main  100.0ms
-    ├── 🔧 fetch_data  20.0ms
-    └── 🤖 process_result  50.0ms
-        └── 🔧 validate  10.0ms
-
-───────────────────────────────────────
-节点数: 4  |  错误: 0  |  总耗时: 100.0ms
-```
-
-错误节点示例：
-
-```
-🧠 failing_task  100.0ms  [ERROR]
-```
-
-（整行红色）
-
-### 接口契约（供 P1 和用户使用）
-
-P0.5 CLI 工具是 SDK 的终端用户界面，提供快速追踪查看能力，无需启动 Web UI。
-
-P1.4 后端的 `GET /api/traces/{trace_id}` 将返回类似的树形 JSON，前端 P2.4 的 `TraceTree` 组件会复用相同的树遍历逻辑（但改为 React 组件递归）。CLI 的图标映射和颜色方案也会在前端保持一致，形成统一的视觉语言。
-
-### 测试设计
-
-**fixture 设计：`tmp_writer` + 预定义 trace**
-
-```python
-@pytest.fixture
-def tmp_writer():
-    """为每个测试创建临时数据库中的 RunWriter。"""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
-    writer = RunWriter(db_path=db_path)
-    yield writer
-    writer.close()
-    Path(db_path).unlink(missing_ok=True)
-```
-
-每个测试独立数据库，无污染。`simple_trace_runs` / `error_trace_runs` 提供标准化的测试数据，减少重复代码。
-
-**subprocess 测试：隔离进程验证 CLI**
-
-```python
-result = subprocess.run(
-    [sys.executable, "-m", "cli.tree_printer", "--last"],
-    cwd=Path(__file__).parent.parent,  # sdk/
-    capture_output=True,
-    text=True,
-)
-assert result.returncode == 0
-assert "main" in result.stdout
-```
-
-通过 `subprocess` 在独立 Python 进程中运行 CLI，验证 `if __name__ == "__main__"` 入口和参数解析。`monkeypatch.setenv` 注入 `LIGHTSMITH_DB_PATH`，隔离测试环境。
-
-**边界情况：深层嵌套 + 多兄弟**
-
-- 10 层深度嵌套：验证递归打印不栈溢出
-- 5 个兄弟节点：验证 `exec_order` 排序和 `is_last` 连接线逻辑
-- 错误节点：验证 ANSI 红色和 `[ERROR]` 标签
-
-### 遗留 / 待注意
-
-- `safe_print` 的 `errors="replace"` 策略在 GBK 终端中会丢失 emoji，但这是 Windows 终端编码限制，无法在 Python 层完美解决。用户可通过 Windows Terminal（支持 UTF-8）或 WSL 获得完整体验。P1 Web UI 不受此限制。
-- `get_last_trace_id` 直接访问 `RunWriter._conn`，绕过抽象层。若 P1.2 将 `RunWriter` 改为异步或连接池，此函数需同步修改。可考虑在 `RunWriter` 中添加 `get_latest_trace_ids(limit=1)` 公开方法。
-- CLI 工具当前无分页/过滤能力，打印超大 trace（100+ 节点）时输出可能过长。P1 Web UI 会提供虚拟滚动和懒加载，CLI 可在 P3 添加 `--max-depth` 参数截断深度。
+| 阶段 | 状态 | 完成时间 | 验收标准 |
+|------|------|---------|---------|
+| **P0 SDK 核心** | ✅ 已完成 | 2026-03-31 ~ 04-02 | 3 层嵌套函数能打印完整树，数据已写入 SQLite |
+| **P1 后端服务** | 🚧 进行中 | 2026-04-03 ~ | SDK 通过 HTTP 上报，`GET /api/traces` 返回树结构 JSON |
+| **P2 前端 UI** | ⏳ 待开始 | - | 浏览器能完整复现 CLI 树打印，支持点击展开详情 |
+| **P3 完善打磨** | ⏳ 待开始 | - | `docker-compose up` 一键启动，完整走一遍接入流程 |
+| **P4 进阶功能** | ⏳ 待开始 | - | 按需选做 |
 
 ---
+
+## 🎯 当前焦点
+
+**正在进行**：P1.2 数据库层（SQLAlchemy ORM）
+
+**下一步**：
+1. 将 P0.4 SQLite schema 迁移为 SQLAlchemy ORM 模型
+2. 实现 `RunRepository`：`save_batch`、`get_trace`、`list_traces`
+3. 添加 PostgreSQL 支持
+4. 生成 Alembic 初始迁移脚本
+
+---
+
+## 📝 文档更新说明
+
+**文档拆分原则**：
+- 每个阶段（P0/P1/P2/P3/P4）独立一个文件
+- 通用的测试原理、工具说明放在对应阶段文件的开头
+- 本索引文件仅记录导航、进度概览和当前焦点
+
+**查看详细实现**：点击上方章节标题或直接打开 `execute/` 目录下的对应文件。
+
+**更新时间**：2026-04-03
+
+---
+
+*最后更新：2026-04-03*
