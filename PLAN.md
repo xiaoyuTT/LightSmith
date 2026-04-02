@@ -78,6 +78,39 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 ---
 
+## 测试规范
+
+**P0-P1 Python 测试规范（SDK + 后端）**
+
+- **测试框架**：使用 pytest
+- **测试位置**：所有测试文件必须放在 `sdk/tests/` 或 `backend/tests/` 目录下
+- **文件命名**：测试文件名以 `test_` 开头（如 `test_models.py`、`test_tree_printer.py`）
+- **测试发现**：pytest 会自动发现并运行所有 `test_*.py` 文件中以 `test_` 开头的函数/方法
+- **运行测试**：在对应目录下执行 `python -m pytest` 或 `python -m pytest tests/`
+
+**禁止行为**：
+- ❌ 不要在项目根目录创建临时测试脚本（如 `example_trace.py`、`test_demo.py`）
+- ❌ 不要手动创建测试数据库在非临时路径
+- ❌ 不要在测试中使用全局默认数据库（会污染测试间状态）
+
+**推荐实践**：
+- ✅ 使用 pytest fixture 管理测试资源（如 `tmp_writer` 创建临时数据库）
+- ✅ 每个测试独立、可重复运行、无副作用
+- ✅ 使用 `tempfile` 创建临时文件/目录，测试后自动清理
+- ✅ 测试覆盖正常路径、边界情况、错误处理
+
+**P2 前端测试规范（React + TypeScript）**
+
+- **测试框架**：Jest + React Testing Library
+- **测试位置**：组件测试文件与源文件同目录，命名为 `*.test.tsx`
+- **运行测试**：`npm test` 或 `npm run test:ci`
+
+**集成测试**：
+- 端到端测试使用 Playwright，放在 `e2e/` 目录
+- 后端 API 集成测试在 `backend/tests/integration/` 下
+
+---
+
 ## 跨阶段接口契约
 
 各阶段结束时须锁定以下接口，后续阶段不得破坏性修改：
@@ -134,10 +167,10 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 ### P0.5 CLI 树打印工具
 
-- [ ] 实现 `tree_printer.py`：从 SQLite 读取一条 trace，格式化打印树
-- [ ] 节点行格式：`[run_type 图标] name  耗时ms  [ERROR]`（错误节点红色）
-- [ ] 支持 `--trace-id` 参数指定查看某条 trace
-- [ ] 支持 `--last` 参数查看最近一条 trace
+- [√] 实现 `tree_printer.py`：从 SQLite 读取一条 trace，格式化打印树
+- [√] 节点行格式：`[run_type 图标] name  耗时ms  [ERROR]`（错误节点红色）
+- [√] 支持 `--trace-id` 参数指定查看某条 trace
+- [√] 支持 `--last` 参数查看最近一条 trace
 
 ### P0.6 `wrap_openai` SDK 包装器（可选，P0 末尾）
 
