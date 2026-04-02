@@ -41,8 +41,11 @@ _run_stack: ContextVar[tuple[tuple[str, str], ...]] = ContextVar(
 # ---------------------------------------------------------------------------
 # 内部状态：exec_order 计数器
 #
-# key: (trace_id, parent_run_id)
+# key: (trace_id, parent_run_id)，代表同一个（trace_id, parent_run_id）下的兄弟节点共享一个计数器。
 # value: 下一个可分配的 exec_order 值（从 0 开始）
+#
+# 由于 exec_order 需要在不同协程中共享（同一父节点的兄弟节点可能在不同协程中创建），
+# 所以用 threading.Lock 保护对 _exec_order_counters 的访问，确保线程安全。
 # ---------------------------------------------------------------------------
 
 _exec_order_counters: dict[tuple[str, Optional[str]], int] = {}
