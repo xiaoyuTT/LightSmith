@@ -6,12 +6,13 @@
 
 ```
 execute/
-├── README.md          # 本说明文件
-├── EXECUTE_P0.md      # P0 SDK 核心层（已完成）
-├── EXECUTE_P1.md      # P1 后端服务层（进行中）
-├── EXECUTE_P2.md      # P2 前端 UI 层（待开始）
-├── EXECUTE_P3.md      # P3 完善打磨（待开始）
-└── EXECUTE_P4.md      # P4 进阶功能（暂不推进）
+├── README.md                # 本说明文件
+├── EXECUTE_P0.md            # P0 SDK 核心层（已完成）
+├── EXECUTE_P1.md            # P1 后端服务层（进行中）
+├── EXECUTE_P2.md            # P2 前端 UI 层（待开始）
+├── EXECUTE_P3.md            # P3 完善打磨（待开始）
+├── EXECUTE_P4.md            # P4 进阶功能（暂不推进）
+└── CONCURRENCY_CONTROL.md  # 并发控制机制详解（横向专题）
 ```
 
 ## 📖 阅读指南
@@ -31,6 +32,10 @@ execute/
 - 实现细节解析
 - 测试覆盖范围
 - 遗留问题和待注意事项
+
+### 查看专题文档
+
+- **[并发控制机制详解](CONCURRENCY_CONTROL.md)** — 跨阶段并发控制策略、实现机制、设计权衡及最佳实践
 
 ## 📝 文档更新规范
 
@@ -92,6 +97,7 @@ execute/
 - **CLI 工具**：[EXECUTE_P0.md](EXECUTE_P0.md) → P0.5
 - **后端脚手架**：[EXECUTE_P1.md](EXECUTE_P1.md) → P1.1
 - **配置管理**：[EXECUTE_P1.md](EXECUTE_P1.md) → P1.1
+- **并发控制策略**：[CONCURRENCY_CONTROL.md](CONCURRENCY_CONTROL.md) 完整说明
 
 ### 按关键词查找
 
@@ -113,4 +119,4 @@ grep -n "pydantic-settings" execute/EXECUTE_P1.md
 
 ---
 
-*最后更新：2026-04-03*
+*最后更新：2026-04-03 - 新增并发控制机制专题文档*
