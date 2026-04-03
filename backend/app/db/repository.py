@@ -21,7 +21,6 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.models.run import Run
-from app.config import get_settings
 
 
 class RunRepository:
@@ -38,7 +37,8 @@ class RunRepository:
             db: SQLAlchemy 会话（由 FastAPI 依赖注入）
         """
         self.db = db
-        self.settings = get_settings()
+        # 从实际的数据库连接获取方言名（sqlite / postgresql）
+        self.dialect_name = db.bind.dialect.name
 
     # ---------------------------------------------------------------------------
     # 写入操作
@@ -68,7 +68,7 @@ class RunRepository:
         total = len(runs)
 
         # 根据数据库类型使用不同的插入语句
-        if self.settings.is_sqlite:
+        if self.dialect_name == "sqlite":
             # SQLite: INSERT OR IGNORE
             stmt = sqlite_insert(Run).values(
                 [self._run_to_dict(run) for run in runs]
@@ -159,6 +159,7 @@ class RunRepository:
         start_after: Optional[str] = None,
         start_before: Optional[str] = None,
         duration_gt: Optional[int] = None,
+        max_page_size: int = 1000,  # 新增参数，允许调用方传入
     ) -> dict[str, any]:
         """分页查询 traces 列表（仅返回根 Run 摘要）
 
@@ -167,13 +168,14 @@ class RunRepository:
 
         Args:
             page: 页码（从 1 开始）
-            page_size: 每页大小（上限由配置 MAX_PAGE_SIZE 控制）
+            page_size: 每页大小
             run_type: 过滤 run_type（可选）
             tags: 过滤 tags（OR 逻辑：包含任一 tag 即匹配，可选）
             has_error: 过滤是否有错误（True/False/None 不过滤）
             start_after: 过滤 start_time >= 此时间（ISO 8601 字符串）
             start_before: 过滤 start_time <= 此时间（ISO 8601 字符串）
             duration_gt: 过滤耗时 > N 毫秒（需要计算 end_time - start_time）
+            max_page_size: 每页大小的上限（默认 1000）
 
         Returns:
             {
@@ -185,7 +187,7 @@ class RunRepository:
             }
         """
         # 限制 page_size 上限
-        page_size = min(page_size, self.settings.max_page_size)
+        page_size = min(page_size, max_page_size)
 
         # 构建查询：只查根节点
         query = self.db.query(Run).filter(Run.parent_run_id.is_(None))

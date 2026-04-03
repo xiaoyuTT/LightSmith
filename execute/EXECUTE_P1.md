@@ -382,3 +382,272 @@ def get_trace(trace_id: str, db: Session = Depends(get_db)):
 - ✅ 为 P1.3-P1.4 API 层提供完整数据访问能力
 
 ---
+
+## P1.3 Run 摄入 API
+
+**完成时间**：2026-04-03
+**状态**：[√] 已完成
+
+### 完成内容
+
+| 任务 | 产出文件 |
+|------|---------|
+| Pydantic schemas | `backend/app/schemas/run.py` |
+| Run 摄入路由 | `backend/app/routers/runs.py` |
+| API 测试（13 个通过） | `backend/tests/test_runs_api.py` |
+| 路由注册 | `backend/app/main.py`（集成路由） |
+
+### 关键决策
+
+**Pydantic Schema 设计**
+
+定义了三个核心 schema：
+
+```python
+class RunSchema(BaseModel):
+    """Run 的 Pydantic 模型（API 层）
+    
+    字段与 SDK Run dataclass 完全对齐
+    注意：metadata 字段在 API 层使用 metadata，在 ORM 层映射为 run_metadata
+    """
+    id: str
+    trace_id: str
+    parent_run_id: Optional[str]
+    name: str
+    run_type: str  # 验证：chain/llm/tool/agent/custom
+    inputs: dict[str, Any]
+    outputs: Optional[dict[str, Any]]
+    error: Optional[str]
+    start_time: str
+    end_time: Optional[str]
+    metadata: dict[str, Any]
+    tags: list[str]
+    exec_order: int
+
+class BatchRunsRequest(BaseModel):
+    """批量摄入请求体"""
+    runs: list[RunSchema]  # min_length=1, max_length=1000
+
+class BatchRunsResponse(BaseModel):
+    """批量摄入响应体"""
+    accepted: int       # 实际插入的新记录数
+    duplicates: int     # 因 ID 冲突而忽略的记录数
+    total: int          # 请求中的 Run 总数
+```
+
+关键点：
+- **字段验证**：run_type 严格验证（仅允许 5 种合法值）
+- **批量大小限制**：Pydantic validator + 路由层双重验证（max 1000）
+- **Pydantic v2 迁移**：使用 `ConfigDict` 替代过时的 `Config` 类
+- **metadata 字段映射**：API 层 `metadata` → ORM 层 `run_metadata`（避免 SQLAlchemy 保留字冲突）
+
+**API 端点实现**
+
+```python
+@router.post("/batch", response_model=BatchRunsResponse, status_code=201)
+def batch_ingest(
+    request: BatchRunsRequest,
+    db: Session = Depends(get_db),
+):
+    """批量摄入 Run 数据
+    
+    - 接收 SDK 上报的 Run 批次
+    - 同一 run.id 重复提交时静默忽略（幂等性）
+    - 返回 {"accepted": N, "duplicates": M, "total": K}
+    """
+    # 1. 验证批量大小
+    if len(request.runs) > settings.max_batch_size:
+        raise HTTPException(400, "批量大小超过限制")
+    
+    # 2. Pydantic → ORM 转换
+    orm_runs = [
+        RunORM(
+            id=run.id, trace_id=run.trace_id, ...,
+            run_metadata=run.metadata,  # 字段名映射
+        )
+        for run in request.runs
+    ]
+    
+    # 3. 调用 Repository 保存
+    repo = RunRepository(db)
+    result = repo.save_batch(orm_runs)
+    
+    return BatchRunsResponse(
+        accepted=result["accepted"],
+        duplicates=result["duplicates"],
+        total=len(request.runs),
+    )
+```
+
+关键点：
+- **状态码 201**：Created（符合 REST 语义）
+- **错误处理**：SQLAlchemyError → 500 + rollback + 日志
+- **幂等性**：Repository 层已实现（SQLite: INSERT OR IGNORE，PostgreSQL: ON CONFLICT DO NOTHING）
+- **依赖注入**：通过 `Depends(get_db)` 自动管理数据库会话生命周期
+
+**Repository 优化**
+
+为支持测试和避免配置依赖，修改了 `RunRepository`：
+
+```python
+class RunRepository:
+    def __init__(self, db: Session):
+        self.db = db
+        # 从实际连接获取方言名（而非从配置读取）
+        self.dialect_name = db.bind.dialect.name  # "sqlite" / "postgresql"
+    
+    def save_batch(self, runs):
+        if self.dialect_name == "sqlite":
+            stmt = sqlite_insert(Run).prefix_with("OR IGNORE")
+        else:
+            stmt = pg_insert(Run).on_conflict_do_nothing(...)
+```
+
+优势：
+- **去耦合**：Repository 不再依赖 `get_settings()`
+- **可测试性**：测试可使用独立的数据库连接，不受全局配置影响
+- **灵活性**：自动根据实际连接类型选择正确的 SQL 方言
+
+### 测试覆盖
+
+**13 个测试用例全部通过（1.13s）**：
+
+| 测试类别 | 测试用例 | 验证内容 |
+|---------|---------|---------|
+| **正常流程** | `test_batch_ingest_single_run` | 单个 Run 摄入 |
+| | `test_batch_ingest_multiple_runs` | 批量摄入 10 个 Run |
+| | `test_batch_ingest_with_parent_child` | 父子节点关系 |
+| **幂等性** | `test_batch_ingest_idempotent` | 重复提交同一 Run |
+| | `test_batch_ingest_partial_duplicates` | 部分 Run 重复 |
+| **输入验证** | `test_batch_ingest_empty_list` | 空列表（422） |
+| | `test_batch_ingest_invalid_run_type` | 无效 run_type（422） |
+| | `test_batch_ingest_missing_required_fields` | 缺少必需字段（422） |
+| | `test_batch_ingest_oversized_batch` | 批量大小超限（422） |
+| **数据正确性** | `test_batch_ingest_preserves_json_fields` | JSON 字段正确保存 |
+| | `test_batch_ingest_with_error` | 带 error 的 Run |
+| | `test_batch_ingest_nullable_fields` | 可选字段为 null |
+| **健康检查** | `test_health_check` | `/health` 端点 |
+
+测试要点：
+- **测试数据库**：使用临时 SQLite 文件（避免内存数据库的连接隔离问题）
+- **依赖注入覆盖**：`app.dependency_overrides[get_db] = override_get_db`
+- **清理机制**：每个测试后自动删除临时数据库文件
+
+### 技术细节
+
+**Windows 控制台编码问题修复**
+
+原代码使用 emoji 字符（🚀 📊 🌐 👋 ❌），导致 Windows 控制台报错：
+```
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f680'
+```
+
+解决方案：替换为纯文本标记：
+```python
+# 修改前
+print(f"🚀 {settings.app_name} starting...")
+
+# 修改后
+print(f"[*] {settings.app_name} starting...")
+```
+
+**Pydantic v2 迁移**
+
+弃用的 `class Config` 替换为 `ConfigDict`：
+```python
+# 修改前
+class RunSchema(BaseModel):
+    ...
+    class Config:
+        from_attributes = True
+        json_schema_extra = {...}
+
+# 修改后
+class RunSchema(BaseModel):
+    ...
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={...},
+    )
+```
+
+### 使用示例
+
+**启动服务**：
+```bash
+cd backend
+uvicorn app.main:app --reload --port 8000
+```
+
+**发送批量摄入请求**：
+```bash
+curl -X POST http://localhost:8000/api/runs/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "runs": [
+      {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "trace_id": "550e8400-e29b-41d4-a716-446655440001",
+        "parent_run_id": null,
+        "name": "test_function",
+        "run_type": "chain",
+        "inputs": {"arg": "value"},
+        "outputs": {"result": "success"},
+        "error": null,
+        "start_time": "2026-04-03T10:00:00Z",
+        "end_time": "2026-04-03T10:00:01Z",
+        "metadata": {},
+        "tags": ["test"],
+        "exec_order": 0
+      }
+    ]
+  }'
+```
+
+**响应**：
+```json
+{
+  "accepted": 1,
+  "duplicates": 0,
+  "total": 1
+}
+```
+
+### API 文档
+
+服务启动后访问：
+- **Swagger UI**: http://localhost:8000/api/docs
+- **ReDoc**: http://localhost:8000/api/redoc
+- **OpenAPI JSON**: http://localhost:8000/api/openapi.json
+
+### 遗留 / 待注意
+
+- **日志系统**：当前使用 `print`，P3 可考虑结构化日志（structlog / loguru）
+- **认证鉴权**：P1.3 暂未实现（P3.2 补齐 API Key 鉴权）
+- **限流保护**：高并发场景下可考虑添加速率限制（P3 或 P4）
+- **请求 ID 追踪**：可添加 `X-Request-ID` header 便于日志关联（P3）
+- **PostgreSQL 测试**：当前测试仅覆盖 SQLite，PostgreSQL 行为需集成测试验证
+
+### P1.3 检查点
+
+- [√] Pydantic schemas（RunSchema、BatchRunsRequest、BatchRunsResponse）
+- [√] API 端点（POST /api/runs/batch）
+- [√] 输入校验（Pydantic 自动验证 + 路由层二次验证）
+- [√] 幂等性（Repository 层实现，API 层复用）
+- [√] 返回正确的响应格式（accepted / duplicates / total）
+- [√] 错误处理（422 输入验证、500 数据库错误）
+- [√] 测试覆盖充分（13 个测试全部通过）
+- [√] API 文档自动生成（FastAPI Swagger UI）
+
+**P1.3 阶段完成总结**：
+- ✅ Run 摄入 API 完整实现
+- ✅ 与 SDK dataclass 字段完全对齐
+- ✅ 幂等性保证（重复提交不报错）
+- ✅ 输入验证严格（Pydantic + 路由层双重验证）
+- ✅ 测试覆盖全面（正常流程、幂等性、输入验证、数据正确性）
+- ✅ Windows 兼容性问题修复（emoji → 纯文本）
+- ✅ Pydantic v2 迁移完成
+- ✅ Repository 去耦合（不依赖全局配置）
+- ✅ 为 P1.4 Trace 查询 API 铺平道路
+
+---

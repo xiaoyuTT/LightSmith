@@ -30,13 +30,13 @@
 
 **包含章节**：
 - P1.1 项目脚手架 ✅
-- P1.2 数据库层（SQLAlchemy）
-- P1.3 Run 摄入 API
+- P1.2 数据库层（SQLAlchemy）✅
+- P1.3 Run 摄入 API ✅
 - P1.4 Trace 查询 API
 - P1.5 SDK HTTP Transport 层
 - P1.6 Docker 化
 
-**状态**：🚧 进行中（P1.1 已完成）
+**状态**：🚧 进行中（P1.1-P1.3 已完成）
 
 ---
 
@@ -100,13 +100,13 @@
 
 ## 🎯 当前焦点
 
-**正在进行**：P1.2 数据库层（SQLAlchemy ORM）
+**正在进行**：P1.4 Trace 查询 API
 
 **下一步**：
-1. 将 P0.4 SQLite schema 迁移为 SQLAlchemy ORM 模型
-2. 实现 `RunRepository`：`save_batch`、`get_trace`、`list_traces`
-3. 添加 PostgreSQL 支持
-4. 生成 Alembic 初始迁移脚本
+1. 实现 `GET /api/traces` 分页列表（返回根 Run 摘要）
+2. 实现 `GET /api/traces/{trace_id}` 树形 JSON（递归嵌套结构）
+3. 实现 `GET /api/runs/{run_id}` 单个 Run 查询
+4. 定义并文档化树形 JSON schema（供前端对齐）
 
 ---
 
@@ -120,6 +120,19 @@
 **查看详细实现**：点击上方章节标题或直接打开 `execute/` 目录下的对应文件。
 
 **更新时间**：2026-04-03
+
+---
+
+## 📈 最新进展
+
+**2026-04-03**：
+- ✅ **P1.3 Run 摄入 API** 完成
+  - 实现 `POST /api/runs/batch` 端点
+  - Pydantic schemas（RunSchema、BatchRunsRequest、BatchRunsResponse）
+  - 13 个测试用例全部通过
+  - 修复 Windows 控制台编码问题（emoji → 纯文本）
+  - Repository 去耦合（不依赖全局配置）
+  - Pydantic v2 迁移完成（Config → ConfigDict）
 
 ---
 

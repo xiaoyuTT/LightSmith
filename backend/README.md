@@ -110,27 +110,127 @@ backend/
 
 **注意**：本项目使用现代 Python 打包标准（PEP 621），仅需 `pyproject.toml` 一个配置文件。不需要 `setup.py` 或 `setup.cfg`。
 
+## API 端点
+
+### 健康检查
+
+```bash
+GET /health
+```
+
+**响应示例**：
+```json
+{
+  "status": "ok",
+  "service": "LightSmith Backend",
+  "version": "0.1.0"
+}
+```
+
+### 批量摄入 Run 数据
+
+```bash
+POST /api/runs/batch
+```
+
+**请求示例**：
+```bash
+curl -X POST http://localhost:8000/api/runs/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "runs": [
+      {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "trace_id": "550e8400-e29b-41d4-a716-446655440001",
+        "parent_run_id": null,
+        "name": "process_order",
+        "run_type": "chain",
+        "inputs": {"order_id": "12345"},
+        "outputs": {"status": "success"},
+        "error": null,
+        "start_time": "2026-04-03T10:00:00Z",
+        "end_time": "2026-04-03T10:00:02.5Z",
+        "metadata": {"env": "production"},
+        "tags": ["payment", "critical"],
+        "exec_order": 0
+      }
+    ]
+  }'
+```
+
+**响应示例**：
+```json
+{
+  "accepted": 1,
+  "duplicates": 0,
+  "total": 1
+}
+```
+
+**字段说明**：
+
+| 字段 | 类型 | 必需 | 说明 |
+|------|------|------|------|
+| `id` | string | ✅ | Run 的全局唯一 ID（UUID4） |
+| `trace_id` | string | ✅ | 顶层调用链的 ID |
+| `parent_run_id` | string\|null | ✅ | 父 Run 的 ID，顶层为 null |
+| `name` | string | ✅ | 函数名或展示名 |
+| `run_type` | string | ✅ | `chain`/`llm`/`tool`/`agent`/`custom` |
+| `inputs` | object | ✅ | 函数入参的 JSON 快照 |
+| `outputs` | object\|null | ✅ | 函数返回值的 JSON 快照 |
+| `error` | string\|null | ✅ | 异常信息 |
+| `start_time` | string | ✅ | 创建时间（UTC ISO 8601） |
+| `end_time` | string\|null | ✅ | 结束时间（UTC ISO 8601） |
+| `metadata` | object | ✅ | 用户自定义键值对 |
+| `tags` | array | ✅ | 字符串标签列表 |
+| `exec_order` | integer | ✅ | 同一父节点下的创建顺序 |
+
+**特性**：
+- ✅ 幂等性保证（重复提交同一 `run.id` 自动忽略）
+- ✅ 批量大小限制（默认最多 1000 个 Run）
+- ✅ 严格输入验证（Pydantic 自动验证）
+- ✅ 错误处理（422 输入错误、500 数据库错误）
+
 ## 开发任务
 
 - [x] P1.1 项目脚手架
-- [ ] P1.2 数据库层（SQLAlchemy ORM）
-- [ ] P1.3 Run 摄入 API
+- [x] P1.2 数据库层（SQLAlchemy ORM）
+- [x] P1.3 Run 摄入 API
 - [ ] P1.4 Trace 查询 API
 - [ ] P1.5 SDK HTTP Transport 层
 - [ ] P1.6 Docker 化
 
 ## 测试
 
+### 单元测试（pytest）
+
 ```bash
 # 运行全部测试
-pytest
+python -m pytest tests/ -v
 
 # 详细输出
-pytest -v
+python -m pytest tests/ -v -s
 
 # 覆盖率报告
-pytest --cov=app --cov-report=html
+python -m pytest tests/ --cov=app --cov-report=html
 ```
+
+**当前测试覆盖**：
+- ✅ 11 个 Repository 测试（数据库层）
+- ✅ 13 个 API 测试（接口层）
+- ✅ **总计 24 个测试，全部通过**
+
+### 手动集成测试
+
+```bash
+# 启动服务（终端1）
+uvicorn app.main:app --reload --port 8000
+
+# 运行手动测试脚本（终端2）
+python scripts/test_api.py
+```
+
+**说明**：`scripts/test_api.py` 是手动集成测试脚本，使用 `requests` 库测试真实的 HTTP 服务。
 
 ## 数据库迁移
 

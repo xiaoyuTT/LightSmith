@@ -224,10 +224,10 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 ### P1.3 Run 摄入 API
 
-- [ ] `POST /api/runs/batch`：接收 `{ "runs": [Run, ...] }` 批量写库
-- [ ] 输入校验：Pydantic schema 严格验证
-- [ ] 幂等性：同一 `run.id` 重复提交不报错，以首次为准；依赖数据库层实现（SQLite: `INSERT OR IGNORE`，PostgreSQL: `ON CONFLICT DO NOTHING`），避免并发 race condition
-- [ ] 返回 `{ "accepted": N, "duplicates": M }`
+- [√] `POST /api/runs/batch`：接收 `{ "runs": [Run, ...] }` 批量写库
+- [√] 输入校验：Pydantic schema 严格验证
+- [√] 幂等性：同一 `run.id` 重复提交不报错，以首次为准；依赖数据库层实现（SQLite: `INSERT OR IGNORE`，PostgreSQL: `ON CONFLICT DO NOTHING`），避免并发 race condition
+- [√] 返回 `{ "accepted": N, "duplicates": M, "total": K }`
 
 ### P1.4 Trace 查询 API
 

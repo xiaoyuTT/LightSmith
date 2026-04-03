@@ -16,14 +16,14 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理（启动/关闭钩子）"""
     # 启动时执行
     settings = get_settings()
-    print(f"🚀 {settings.app_name} v{settings.app_version} starting...")
-    print(f"📊 Database: {settings.database_url.split('@')[-1] if '@' in settings.database_url else settings.database_url}")
-    print(f"🌐 CORS origins: {settings.cors_origins}")
+    print(f"[*] {settings.app_name} v{settings.app_version} starting...")
+    print(f"[*] Database: {settings.database_url.split('@')[-1] if '@' in settings.database_url else settings.database_url}")
+    print(f"[*] CORS origins: {settings.cors_origins}")
 
     yield
 
     # 关闭时执行
-    print("👋 Shutting down...")
+    print("[*] Shutting down...")
 
 
 def create_app() -> FastAPI:
@@ -59,7 +59,10 @@ def create_app() -> FastAPI:
             "version": settings.app_version,
         }
 
-    # TODO P1.3: 注册 /api/runs 路由
+    # 注册路由
+    from app.routers import runs
+    app.include_router(runs.router, prefix=settings.api_prefix)
+
     # TODO P1.4: 注册 /api/traces 路由
 
     return app
