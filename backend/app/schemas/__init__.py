@@ -5,11 +5,13 @@ schemas 包 — Pydantic 请求/响应模型
 """
 
 from app.schemas.run import RunSchema, BatchRunsRequest, BatchRunsResponse
+from app.schemas.trace import TraceListItem, TracesListResponse, TraceTreeNode
 
 __all__ = [
     "RunSchema",
     "BatchRunsRequest",
     "BatchRunsResponse",
+    "TraceListItem",
+    "TracesListResponse",
+    "TraceTreeNode",
 ]
-
-# TODO P1.4: 实现 TraceListResponse / TraceDetailResponse schema

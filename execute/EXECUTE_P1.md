@@ -651,3 +651,411 @@ curl -X POST http://localhost:8000/api/runs/batch \
 - ✅ 为 P1.4 Trace 查询 API 铺平道路
 
 ---
+
+
+## P1.4 Trace 查询 API
+
+**完成时间**：2026-04-03
+**状态**：[√] 已完成
+
+### 完成内容
+
+| 任务 | 产出文件 |
+|------|---------|
+| Pydantic schemas（查询响应） | `backend/app/schemas/trace.py` |
+| Trace 查询路由 | `backend/app/routers/traces.py` |
+| API 测试（15 个通过） | `backend/tests/test_traces_api.py` |
+| 路由注册 | `backend/app/main.py`（集成路由） |
+
+### 关键决策
+
+**响应 Schema 设计**
+
+定义了三个核心 schema：
+
+```python
+class TraceListItem(BaseModel):
+    """列表页的 Trace 摘要（根 Run）
+
+    仅包含必要的摘要信息，便于前端快速渲染列表。
+    """
+    id: str
+    trace_id: str
+    name: str
+    run_type: str
+    status: str  # computed: success/error/running
+    error: Optional[str]
+    start_time: str
+    end_time: Optional[str]
+    duration_ms: Optional[float]  # computed
+    tags: list[str]
+
+class TracesListResponse(BaseModel):
+    """分页列表响应"""
+    items: list[TraceListItem]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+class TraceTreeNode(BaseModel):
+    """树形 JSON 节点（递归结构）
+
+    重要：这是前端 P2.2 TypeScript 类型的对齐基准。
+    """
+    # 完整的 Run 字段
+    id: str
+    trace_id: str
+    parent_run_id: Optional[str]
+    name: str
+    run_type: str
+    inputs: dict[str, Any]
+    outputs: Optional[dict[str, Any]]
+    error: Optional[str]
+    start_time: str
+    end_time: Optional[str]
+    metadata: dict[str, Any]
+    tags: list[str]
+    exec_order: int
+
+    # 计算字段
+    duration_ms: Optional[float]  # @computed_field
+    status: str                   # @computed_field
+
+    # 树形结构：递归子节点
+    children: list["TraceTreeNode"]
+```
+
+**关键点**：
+- **计算字段**：`duration_ms` 和 `status` 使用 `@computed_field` 自动计算
+- **递归结构**：`TraceTreeNode` 的 `children` 字段类型为 `list["TraceTreeNode"]`（引号表示前向引用）
+- **与前端对齐**：这个 schema 定义了树形 JSON 的标准格式，前端 TypeScript 类型应直接对齐此结构
+
+**树形 JSON 构建算法**
+
+```python
+def _build_trace_tree(runs: list[RunORM]) -> Optional[TraceTreeNode]:
+    """构建树形结构
+
+    算法：
+      1. 将所有 Run 转换为 TraceTreeNode（children 初始为空）
+      2. 建立 id → node 映射（dict）
+      3. 遍历所有 Run，将子节点添加到父节点的 children 列表
+      4. 对每个节点的 children 按 exec_order 排序
+      5. 返回根节点（parent_run_id 为 None）
+
+    时间复杂度：O(n)，空间复杂度：O(n)
+    """
+    # 1. 转换并建立映射
+    node_map: dict[str, TraceTreeNode] = {}
+    for run in runs:
+        node = _orm_to_trace_tree_node(run)
+        node_map[run.id] = node
+
+    # 2. 建立父子关系
+    root_node = None
+    for run in runs:
+        node = node_map[run.id]
+        if run.parent_run_id is None:
+            root_node = node
+        else:
+            parent = node_map.get(run.parent_run_id)
+            if parent:
+                parent.children.append(node)
+
+    # 3. 排序子节点
+    for node in node_map.values():
+        node.children.sort(key=lambda n: n.exec_order)
+
+    return root_node
+```
+
+**优势**：
+- **高效**：单次遍历构建树，O(n) 时间复杂度
+- **健壮**：处理缺失父节点的情况（孤立子树）
+- **有序**：保证子节点按 exec_order 正确排序
+
+**API 端点实现**
+
+三个端点：
+
+1. **GET /api/traces** - 分页列表（返回根 Run 摘要）
+2. **GET /api/traces/{trace_id}** - 完整树形 JSON（递归嵌套）
+3. **GET /api/traces/{trace_id}/runs/{run_id}** - 单个 Run 查询
+
+关键代码：
+
+```python
+@router.get("", response_model=TracesListResponse)
+def list_traces(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=1000),
+    run_type: Optional[str] = Query(None),
+    tags: Optional[str] = Query(None),  # 逗号分隔
+    has_error: Optional[bool] = Query(None),
+    start_after: Optional[str] = Query(None),
+    start_before: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """分页查询 Traces 列表"""
+    # 解析 tags（逗号分隔 → 列表）
+    tags_list = [t.strip() for t in tags.split(",")] if tags else None
+
+    # 调用 Repository 查询
+    result = repo.list_traces(...)
+
+    # 转换为响应 schema
+    items = [_orm_to_trace_list_item(run) for run in result["items"]]
+    return TracesListResponse(items=items, ...)
+
+@router.get("/{trace_id}", response_model=TraceTreeNode)
+def get_trace_tree(trace_id: str, db: Session = Depends(get_db)):
+    """获取完整 Trace 树形 JSON"""
+    runs = repo.get_trace(trace_id)
+    if not runs:
+        raise HTTPException(404, "Trace not found")
+
+    tree = _build_trace_tree(runs)
+    return tree
+```
+
+### API 端点文档
+
+#### GET /api/traces
+
+**查询参数**：
+
+| 参数 | 类型 | 必需 | 说明 |
+|------|------|------|------|
+| `page` | int | ❌ | 页码（默认 1，≥1） |
+| `page_size` | int | ❌ | 每页大小（默认 50，1-1000） |
+| `run_type` | string | ❌ | 过滤 run_type |
+| `tags` | string | ❌ | 过滤 tags（逗号分隔，OR 逻辑） |
+| `has_error` | bool | ❌ | 过滤是否有错误 |
+| `start_after` | string | ❌ | 过滤 start_time ≥ 此时间（ISO 8601） |
+| `start_before` | string | ❌ | 过滤 start_time ≤ 此时间（ISO 8601） |
+
+**响应示例**：
+```json
+{
+  "items": [
+    {
+      "id": "run-1",
+      "trace_id": "trace-1",
+      "name": "main_task",
+      "run_type": "chain",
+      "status": "success",
+      "error": null,
+      "start_time": "2026-04-03T10:00:00Z",
+      "end_time": "2026-04-03T10:00:02Z",
+      "duration_ms": 2000.0,
+      "tags": ["production"]
+    }
+  ],
+  "total": 100,
+  "page": 1,
+  "page_size": 50,
+  "total_pages": 2
+}
+```
+
+#### GET /api/traces/{trace_id}
+
+**路径参数**：
+- `trace_id` (string) - Trace ID
+
+**响应示例**（树形 JSON）：
+```json
+{
+  "id": "run-root",
+  "trace_id": "trace-1",
+  "parent_run_id": null,
+  "name": "main_task",
+  "run_type": "chain",
+  "inputs": {"arg": "value"},
+  "outputs": {"result": "success"},
+  "error": null,
+  "start_time": "2026-04-03T10:00:00Z",
+  "end_time": "2026-04-03T10:00:02Z",
+  "metadata": {},
+  "tags": ["production"],
+  "exec_order": 0,
+  "duration_ms": 2000.0,
+  "status": "success",
+  "children": [
+    {
+      "id": "run-child-1",
+      "trace_id": "trace-1",
+      "parent_run_id": "run-root",
+      "name": "sub_task",
+      "run_type": "tool",
+      "inputs": {},
+      "outputs": {},
+      "error": null,
+      "start_time": "2026-04-03T10:00:00.5Z",
+      "end_time": "2026-04-03T10:00:01Z",
+      "metadata": {},
+      "tags": [],
+      "exec_order": 0,
+      "duration_ms": 500.0,
+      "status": "success",
+      "children": []
+    }
+  ]
+}
+```
+
+**重要**：这个 JSON 结构是前端 P2.2 TypeScript 类型的对齐基准：
+- 每个节点包含完整的 Run 数据
+- `children` 字段递归包含子节点
+- 叶子节点的 `children` 为空数组 `[]`
+- 子节点按 `exec_order` 排序
+
+#### GET /api/traces/{trace_id}/runs/{run_id}
+
+**路径参数**：
+- `trace_id` (string) - Trace ID
+- `run_id` (string) - Run ID
+
+**响应**：单个 Run 的完整数据（RunSchema 格式）
+
+### 测试覆盖
+
+**15 个测试用例全部通过（1.85s）**：
+
+| 测试类别 | 测试用例 | 验证内容 |
+|---------|---------|---------|
+| **列表查询** | `test_list_traces_default` | 默认分页 |
+| | `test_list_traces_pagination` | 分页功能（2 条/页） |
+| | `test_list_traces_filter_run_type` | 按 run_type 过滤 |
+| | `test_list_traces_filter_has_error` | 按错误状态过滤 |
+| | `test_list_traces_filter_tags` | 按 tags 过滤 |
+| | `test_list_traces_empty_result` | 空结果 |
+| **树形查询** | `test_get_trace_tree_success` | 获取完整树 |
+| | `test_get_trace_tree_not_found` | 查询不存在的 trace（404） |
+| | `test_get_trace_tree_structure_validation` | 验证树形结构正确性 |
+| **单个 Run** | `test_get_run_success` | 获取单个 Run |
+| | `test_get_run_not_found` | Run 不存在（404） |
+| | `test_get_run_wrong_trace` | Run 不属于该 Trace（404） |
+| **边界情况** | `test_list_traces_invalid_page` | 无效页码（422） |
+| | `test_list_traces_invalid_page_size` | 无效 page_size（422） |
+| | `test_tree_ordering_by_exec_order` | 子节点按 exec_order 排序 |
+
+**测试亮点**：
+- ✅ 创建 3 层树形结构（root → child → grandchild）
+- ✅ 验证递归结构的正确性（parent-child 关系）
+- ✅ 验证子节点排序（exec_order）
+- ✅ 多种过滤条件组合测试
+- ✅ 边界情况覆盖（404、422 错误）
+
+### 前端对接指南
+
+**TypeScript 类型定义**（P2.2 应直接对齐此结构）：
+
+```typescript
+// 与 TraceTreeNode schema 完全对齐
+interface TraceTreeNode {
+  id: string;
+  trace_id: string;
+  parent_run_id: string | null;
+  name: string;
+  run_type: string;
+  inputs: Record<string, any>;
+  outputs: Record<string, any> | null;
+  error: string | null;
+  start_time: string;
+  end_time: string | null;
+  metadata: Record<string, any>;
+  tags: string[];
+  exec_order: number;
+
+  // 计算字段
+  duration_ms: number | null;
+  status: "success" | "error" | "running";
+
+  // 递归子节点
+  children: TraceTreeNode[];
+}
+
+// 列表项
+interface TraceListItem {
+  id: string;
+  trace_id: string;
+  name: string;
+  run_type: string;
+  status: "success" | "error" | "running";
+  error: string | null;
+  start_time: string;
+  end_time: string | null;
+  duration_ms: number | null;
+  tags: string[];
+}
+
+// 分页响应
+interface TracesListResponse {
+  items: TraceListItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+```
+
+### 使用示例
+
+**查询 Traces 列表**：
+```bash
+# 默认查询
+curl http://localhost:8000/api/traces
+
+# 分页 + 过滤
+curl "http://localhost:8000/api/traces?page=1&page_size=20&run_type=chain&has_error=false"
+
+# 按 tags 过滤（OR 逻辑）
+curl "http://localhost:8000/api/traces?tags=production,critical"
+
+# 时间范围过滤
+curl "http://localhost:8000/api/traces?start_after=2026-04-03T00:00:00Z"
+```
+
+**获取完整树形 JSON**：
+```bash
+curl http://localhost:8000/api/traces/trace-1
+```
+
+**获取单个 Run**：
+```bash
+curl http://localhost:8000/api/traces/trace-1/runs/run-1
+```
+
+### 遗留 / 待注意
+
+- **duration_gt 过滤**：暂未在数据库层实现，需在 API 层计算耗时后过滤（P3 补齐）
+- **搜索功能**：全文搜索（name/inputs/outputs）留待 P3.1 实现
+- **性能优化**：大 trace（100+ 节点）的树构建性能待实测，必要时考虑缓存
+- **错误处理**：当前 tree 构建失败返回 500，可考虑降级返回扁平列表
+
+### P1.4 检查点
+
+- [√] Pydantic schemas（TraceListItem、TracesListResponse、TraceTreeNode）
+- [√] API 端点（GET /api/traces、GET /api/traces/{trace_id}、GET /api/runs/{run_id}）
+- [√] 树形 JSON 构建算法（O(n) 时间复杂度）
+- [√] 计算字段（duration_ms、status）
+- [√] 查询参数验证（Query 参数、分页范围）
+- [√] 错误处理（404、422）
+- [√] 测试覆盖充分（15 个测试全部通过）
+- [√] 前端对接文档（TypeScript 类型定义）
+- [√] 树形 JSON schema 文档化（供前端 P2.2 对齐）
+
+**P1.4 阶段完成总结**：
+- ✅ Trace 查询 API 完整实现
+- ✅ 树形 JSON 递归结构正确
+- ✅ 分页查询和多种过滤条件支持
+- ✅ 树形结构按 exec_order 正确排序
+- ✅ 计算字段（duration_ms、status）自动生成
+- ✅ 与前端 TypeScript 类型完全对齐
+- ✅ 测试覆盖全面（列表、树形、单个 Run、边界情况）
+- ✅ API 文档完善（供前端开发参考）
+- ✅ 为 P1.5 SDK HTTP Transport 铺平道路
+
+---

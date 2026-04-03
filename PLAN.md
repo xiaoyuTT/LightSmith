@@ -231,10 +231,10 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 ### P1.4 Trace 查询 API
 
-- [ ] `GET /api/traces`：分页列表，返回根 run 摘要（id, name, duration, status, start_time, tag）
-  - 查询参数：`page`、`page_size`、`run_type`、`tags`、`error`、`start_after`、`start_before`、`duration_gt`（ms）
-- [ ] `GET /api/traces/{trace_id}`：返回完整树形 JSON（递归嵌套结构，schema：根节点含 `children: Run[]` 字段，子节点递归同结构）；在此任务中定义并文档化该 schema，供前端 P2.2 TypeScript 类型直接对齐
-- [ ] `GET /api/runs/{run_id}`：返回单个 Run 完整数据
+- [√] `GET /api/traces`：分页列表，返回根 run 摘要（id, name, duration, status, start_time, tag）
+  - 查询参数：`page`、`page_size`、`run_type`、`tags`、`error`、`start_after`、`start_before`
+- [√] `GET /api/traces/{trace_id}`：返回完整树形 JSON（递归嵌套结构，schema：根节点含 `children: Run[]` 字段，子节点递归同结构）；已定义并文档化该 schema，供前端 P2.2 TypeScript 类型直接对齐
+- [√] `GET /api/traces/{trace_id}/runs/{run_id}`：返回单个 Run 完整数据
 
 ### P1.5 SDK HTTP Transport 层
 

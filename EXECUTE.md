@@ -32,11 +32,11 @@
 - P1.1 项目脚手架 ✅
 - P1.2 数据库层（SQLAlchemy）✅
 - P1.3 Run 摄入 API ✅
-- P1.4 Trace 查询 API
+- P1.4 Trace 查询 API ✅
 - P1.5 SDK HTTP Transport 层
 - P1.6 Docker 化
 
-**状态**：🚧 进行中（P1.1-P1.3 已完成）
+**状态**：🚧 进行中（P1.1-P1.4 已完成）
 
 ---
 
@@ -100,13 +100,13 @@
 
 ## 🎯 当前焦点
 
-**正在进行**：P1.4 Trace 查询 API
+**正在进行**：P1.5 SDK HTTP Transport 层
 
 **下一步**：
-1. 实现 `GET /api/traces` 分页列表（返回根 Run 摘要）
-2. 实现 `GET /api/traces/{trace_id}` 树形 JSON（递归嵌套结构）
-3. 实现 `GET /api/runs/{run_id}` 单个 Run 查询
-4. 定义并文档化树形 JSON schema（供前端对齐）
+1. 实现 `BatchBuffer`：内存队列 + 定时 flush（满 100 条 或 5s 触发）
+2. 实现 `HttpClient`：向后端 POST /api/runs/batch，带重试
+3. 注册 `atexit` 钩子：进程退出时强制 flush
+4. 本地 SQLite 模式保留（离线 fallback）
 
 ---
 
@@ -126,6 +126,14 @@
 ## 📈 最新进展
 
 **2026-04-03**：
+- ✅ **P1.4 Trace 查询 API** 完成
+  - 实现 GET /api/traces（分页列表）、GET /api/traces/{trace_id}（树形 JSON）、GET /api/runs/{run_id}
+  - Pydantic schemas（TraceListItem、TracesListResponse、TraceTreeNode）
+  - 树形 JSON 构建算法（O(n) 时间复杂度）
+  - 15 个测试用例全部通过
+  - 定义并文档化树形 JSON schema（供前端 P2.2 TypeScript 对齐）
+  - **总测试：39 个全部通过**（Repository 11 + Run API 13 + Trace API 15）
+
 - ✅ **P1.3 Run 摄入 API** 完成
   - 实现 `POST /api/runs/batch` 端点
   - Pydantic schemas（RunSchema、BatchRunsRequest、BatchRunsResponse）

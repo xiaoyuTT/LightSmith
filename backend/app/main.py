@@ -60,10 +60,9 @@ def create_app() -> FastAPI:
         }
 
     # 注册路由
-    from app.routers import runs
+    from app.routers import runs, traces
     app.include_router(runs.router, prefix=settings.api_prefix)
-
-    # TODO P1.4: 注册 /api/traces 路由
+    app.include_router(traces.router, prefix=settings.api_prefix)
 
     return app
 

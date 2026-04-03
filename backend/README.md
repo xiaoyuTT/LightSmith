@@ -191,12 +191,137 @@ curl -X POST http://localhost:8000/api/runs/batch \
 - ✅ 严格输入验证（Pydantic 自动验证）
 - ✅ 错误处理（422 输入错误、500 数据库错误）
 
+### 查询 Traces 列表
+
+```bash
+GET /api/traces
+```
+
+**查询参数**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `page` | int | 页码（默认 1） |
+| `page_size` | int | 每页大小（默认 50，1-1000） |
+| `run_type` | string | 过滤 run_type |
+| `tags` | string | 过滤 tags（逗号分隔，OR 逻辑） |
+| `has_error` | bool | 过滤是否有错误 |
+| `start_after` | string | 过滤 start_time ≥ 此时间（ISO 8601） |
+| `start_before` | string | 过滤 start_time ≤ 此时间（ISO 8601） |
+
+**请求示例**：
+```bash
+# 默认查询
+curl http://localhost:8000/api/traces
+
+# 分页 + 过滤
+curl "http://localhost:8000/api/traces?page=1&page_size=20&run_type=chain"
+
+# 按 tags 过滤
+curl "http://localhost:8000/api/traces?tags=production,critical"
+```
+
+**响应示例**：
+```json
+{
+  "items": [
+    {
+      "id": "run-1",
+      "trace_id": "trace-1",
+      "name": "main_task",
+      "run_type": "chain",
+      "status": "success",
+      "error": null,
+      "start_time": "2026-04-03T10:00:00Z",
+      "end_time": "2026-04-03T10:00:02Z",
+      "duration_ms": 2000.0,
+      "tags": ["production"]
+    }
+  ],
+  "total": 100,
+  "page": 1,
+  "page_size": 50,
+  "total_pages": 2
+}
+```
+
+### 获取完整 Trace 树
+
+```bash
+GET /api/traces/{trace_id}
+```
+
+**请求示例**：
+```bash
+curl http://localhost:8000/api/traces/trace-1
+```
+
+**响应示例**（树形 JSON，递归结构）：
+```json
+{
+  "id": "run-root",
+  "trace_id": "trace-1",
+  "parent_run_id": null,
+  "name": "main_task",
+  "run_type": "chain",
+  "inputs": {"arg": "value"},
+  "outputs": {"result": "success"},
+  "error": null,
+  "start_time": "2026-04-03T10:00:00Z",
+  "end_time": "2026-04-03T10:00:02Z",
+  "metadata": {},
+  "tags": ["production"],
+  "exec_order": 0,
+  "duration_ms": 2000.0,
+  "status": "success",
+  "children": [
+    {
+      "id": "run-child-1",
+      "trace_id": "trace-1",
+      "parent_run_id": "run-root",
+      "name": "sub_task",
+      "run_type": "tool",
+      "inputs": {},
+      "outputs": {},
+      "error": null,
+      "start_time": "2026-04-03T10:00:00.5Z",
+      "end_time": "2026-04-03T10:00:01Z",
+      "metadata": {},
+      "tags": [],
+      "exec_order": 0,
+      "duration_ms": 500.0,
+      "status": "success",
+      "children": []
+    }
+  ]
+}
+```
+
+**重要**：这个树形 JSON 结构是前端 TypeScript 类型的对齐基准：
+- 每个节点包含完整的 Run 数据
+- `children` 字段递归包含子节点
+- 叶子节点的 `children` 为空数组
+- 子节点按 `exec_order` 排序
+
+### 获取单个 Run
+
+```bash
+GET /api/traces/{trace_id}/runs/{run_id}
+```
+
+**请求示例**：
+```bash
+curl http://localhost:8000/api/traces/trace-1/runs/run-1
+```
+
+**响应**：单个 Run 的完整数据（RunSchema 格式）
+
 ## 开发任务
 
 - [x] P1.1 项目脚手架
 - [x] P1.2 数据库层（SQLAlchemy ORM）
 - [x] P1.3 Run 摄入 API
-- [ ] P1.4 Trace 查询 API
+- [x] P1.4 Trace 查询 API
 - [ ] P1.5 SDK HTTP Transport 层
 - [ ] P1.6 Docker 化
 
@@ -217,8 +342,9 @@ python -m pytest tests/ --cov=app --cov-report=html
 
 **当前测试覆盖**：
 - ✅ 11 个 Repository 测试（数据库层）
-- ✅ 13 个 API 测试（接口层）
-- ✅ **总计 24 个测试，全部通过**
+- ✅ 13 个 Run API 测试（摄入接口）
+- ✅ 15 个 Trace API 测试（查询接口）
+- ✅ **总计 39 个测试，全部通过**
 
 ### 手动集成测试
 
