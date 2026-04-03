@@ -20,14 +20,10 @@
 | SQLAlchemy 数据库层 | `backend/app/db/base.py` |
 | Alembic 迁移配置 | `backend/alembic.ini`、`backend/alembic/env.py` |
 | 环境变量模板 | `backend/.env.example` |
-| 项目文档 | `backend/README.md` |
-| 子包占位文件 | `models/`、`schemas/`、`routers/`、`tests/` |
 
 ### 关键决策
 
 **配置管理：pydantic-settings**
-
-使用 `pydantic-settings` 的 `BaseSettings` 实现类型安全的配置管理：
 
 ```python
 class Settings(BaseSettings):
@@ -36,95 +32,112 @@ class Settings(BaseSettings):
     
     model_config = SettingsConfigDict(
         env_file=".env",
-        env_prefix="LIGHTSMITH_",  # LIGHTSMITH_DATABASE_URL → database_url
+        env_prefix="LIGHTSMITH_",  # 自动映射环境变量
     )
+    
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url(cls, v: str) -> str:
+        if not (v.startswith("postgresql://") or v.startswith("sqlite://")):
+            raise ValueError("database_url 必须以 postgresql:// 或 sqlite:// 开头")
+        return v
 ```
 
-优势：
-- **类型验证**：字段类型错误时启动失败，避免运行时错误
-- **环境变量映射**：自动从 `LIGHTSMITH_*` 环境变量加载配置
-- **默认值 + 验证器**：`Field` 提供默认值和约束（如 `ge=1` 表示 ≥1）
-- **单例模式**：`get_settings()` 延迟初始化，避免导入时读取环境变量
+优势：类型验证、环境变量自动映射、启动时配置校验、单例模式。
 
-**数据库 URL 验证**
+**SQLAlchemy 引擎和会话工厂**
+
+核心概念：
+
+- **Engine（引擎）**：管理数据库连接池，复用连接而非每次新建（性能优化：300ms → 10ms）
+- **SessionLocal（会话工厂）**：生产独立会话（Session），每个请求一个会话，避免数据混乱
+- **Session（会话）**：类似"工作台"，操作先在内存中进行，`commit()` 统一提交
 
 ```python
-@field_validator("database_url")
-@classmethod
-def validate_database_url(cls, v: str) -> str:
-    if not (v.startswith("postgresql://") or v.startswith("sqlite://")):
-        raise ValueError("database_url 必须以 postgresql:// 或 sqlite:// 开头")
-    return v
+# SQLite / PostgreSQL 分支配置
+if settings.is_sqlite:
+    engine = create_engine(
+        settings.database_url,
+        connect_args={"check_same_thread": False},
+    )
+else:
+    engine = create_engine(
+        settings.database_url,
+        pool_size=10,
+        max_overflow=20,
+    )
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 ```
 
-启动时立即发现配置错误，而非等到首次数据库连接时才报错。
-
-**SQLAlchemy 引擎配置：区分 SQLite / PostgreSQL**
-
-```python
-engine = create_engine(
-    settings.database_url,
-    # SQLite 需要禁用线程检查（FastAPI 多线程环境）
-    connect_args={"check_same_thread": False} if settings.is_sqlite else {},
-    # PostgreSQL 启用连接池
-    pool_size=10 if settings.is_postgresql else None,
-    max_overflow=20 if settings.is_postgresql else None,
-)
-```
-
-这样一套代码同时支持：
-- **开发环境**：SQLite（`sqlite:///./lightsmith.db`），零依赖
-- **生产环境**：PostgreSQL（`postgresql://...`），支持并发
-
-**FastAPI lifespan 事件**
-
-使用 `@asynccontextmanager` 替代旧的 `@app.on_event("startup")`：
-
-```python
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 启动时执行（打印配置摘要）
-    print(f"🚀 {settings.app_name} starting...")
-    yield
-    # 关闭时执行（清理资源）
-    print("👋 Shutting down...")
-
-app = FastAPI(lifespan=lifespan)
-```
-
-`lifespan` 是 FastAPI 0.109+ 的推荐方式，替代已废弃的 `startup`/`shutdown` 事件。
-
-**Alembic 与 pydantic-settings 集成**
-
-`alembic/env.py` 直接从 `app.config` 读取数据库 URL：
-
-```python
-from app.config import get_settings
-
-settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
-```
-
-这样 Alembic 和 FastAPI 使用**同一套配置**，避免 `alembic.ini` 中硬编码数据库 URL。用户只需设置 `LIGHTSMITH_DATABASE_URL` 环境变量即可。
-
-**依赖注入：`get_db`**
+**FastAPI 依赖注入：get_db**
 
 ```python
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
-        yield db
+        yield db  # 暂停并返回 db，函数还活着
     finally:
-        db.close()
-```
+        db.close()  # 路由函数返回后，继续执行这里
 
-FastAPI 路由函数通过 `Depends(get_db)` 自动获取数据库会话，请求结束时自动关闭：
-
-```python
 @app.get("/api/traces")
 def list_traces(db: Session = Depends(get_db)):
-    # db 会话自动管理，无需手动 close
+    # FastAPI 自动调用 get_db()，请求结束后自动 close
     ...
+```
+
+**关键**：`yield` 让函数成为生成器，可"暂停-恢复"，确保 `finally` 块一定执行（异常安全）。
+
+依赖注入优势：自动资源管理（防止连接泄漏）、异常安全、代码简洁、可测试性（`app.dependency_overrides` 替换依赖）。
+
+**models 和 db 的分层架构**
+
+```
+【db/base.py】基础设施层
+    ├─ Base（ORM 基类，元数据注册表）
+    ├─ engine（连接池）
+    ├─ SessionLocal（会话工厂）
+    └─ get_db()（依赖注入）
+        ↓
+【models/run.py】模型层
+    └─ class Run(Base)（继承 Base，数据结构定义）
+        ↓
+【db/repository.py】数据访问层
+    └─ RunRepository（CRUD 封装、业务逻辑）
+        ↓
+【routers/*.py】路由层
+    └─ API 端点（调用 Repository）
+```
+
+职责分离：
+- `db/base.py` - "怎么连"：连接管理、会话生命周期
+- `models/run.py` - "是什么"：数据结构、字段约束
+- `db/repository.py` - "怎么用"：CRUD 操作、复杂查询
+
+**Base.metadata 的作用**：
+- 记录所有继承 Base 的模型类及表结构
+- Alembic 通过对比 `Base.metadata` 和数据库实际结构生成迁移脚本
+- 导入顺序重要：先创建 Base，再定义模型（`class Run(Base)`）
+
+**对象生命周期**：
+
+| 对象 | 作用域 | 何时创建 |
+|------|-------|---------|
+| **Base, engine, SessionLocal** | 全局单例 | 模块导入时（应用启动） |
+| **Session** | 请求作用域 | 请求开始（`SessionLocal()`） |
+| **Run 对象** | 查询结果 | 执行查询时（`db.query(Run).all()`） |
+
+**Alembic 配置集成**
+
+```python
+# alembic/env.py
+from app.config import get_settings
+from app.models import Run  # 必须导入，触发模型注册
+
+settings = get_settings()
+config.set_main_option("sqlalchemy.url", settings.database_url)
+target_metadata = Base.metadata  # Alembic 读取这个生成迁移
 ```
 
 ### 项目结构
@@ -132,191 +145,240 @@ def list_traces(db: Session = Depends(get_db)):
 ```
 backend/
 ├── app/
-│   ├── __init__.py
-│   ├── main.py              # FastAPI 应用入口（lifespan、CORS、健康检查）
-│   ├── config.py            # 配置管理（Settings、get_settings）
+│   ├── config.py            # pydantic-settings 配置
+│   ├── main.py              # FastAPI 入口（lifespan、CORS）
 │   ├── db/
-│   │   ├── __init__.py
-│   │   └── base.py          # SQLAlchemy 引擎、会话工厂、get_db 依赖
-│   ├── models/              # SQLAlchemy ORM 模型（P1.2 实现）
-│   │   └── __init__.py
-│   ├── schemas/             # Pydantic 请求/响应 schema（P1.3-P1.4 实现）
-│   │   └── __init__.py
-│   └── routers/             # API 路由（P1.3-P1.4 实现）
-│       └── __init__.py
-├── alembic/                 # 数据库迁移
-│   ├── env.py               # 迁移环境配置（集成 pydantic-settings）
-│   ├── script.py.mako       # 迁移脚本模板
-│   ├── README               # Alembic 使用说明
-│   └── versions/            # 迁移版本脚本（自动生成）
-│       └── .gitkeep
-├── tests/                   # 测试套件（P1.2+ 实现）
-│   └── __init__.py
-├── .env.example             # 环境变量模板
-├── alembic.ini              # Alembic 配置文件
-├── pyproject.toml           # 项目配置（依赖、构建、测试）
-└── README.md                # 项目文档（快速开始、开发指南）
+│   │   ├── base.py          # Engine、SessionLocal、Base、get_db
+│   │   └── repository.py    # RunRepository（P1.2）
+│   ├── models/
+│   │   └── run.py           # Run ORM 模型（P1.2）
+│   ├── schemas/             # Pydantic schema（P1.3-P1.4）
+│   └── routers/             # API 路由（P1.3-P1.4）
+├── alembic/
+│   ├── env.py               # 迁移配置（集成 pydantic-settings）
+│   └── versions/            # 迁移脚本
+├── tests/
+├── .env.example
+├── alembic.ini
+└── pyproject.toml
 ```
 
 ### 依赖清单
 
-**核心依赖**（`dependencies`）：
+**核心**：`fastapi` (>=0.115.0), `uvicorn[standard]` (>=0.30.0), `sqlalchemy` (>=2.0.0), `alembic` (>=1.13.0), `pydantic-settings` (>=2.5.0), `psycopg2-binary` (>=2.9.9)
 
-| 包名 | 版本 | 用途 |
-|------|------|------|
-| `fastapi` | >=0.115.0 | Web 框架 |
-| `uvicorn[standard]` | >=0.30.0 | ASGI 服务器 |
-| `sqlalchemy` | >=2.0.0 | ORM 框架 |
-| `alembic` | >=1.13.0 | 数据库迁移工具 |
-| `pydantic` | >=2.9.0 | 数据验证 |
-| `pydantic-settings` | >=2.5.0 | 配置管理 |
-| `psycopg2-binary` | >=2.9.9 | PostgreSQL 驱动 |
+**开发**：`pytest`, `pytest-asyncio`, `httpx`, `black`, `ruff`
 
-**开发依赖**（`optional-dependencies.dev`）：
-
-| 包名 | 用途 |
-|------|------|
-| `pytest` | 测试框架 |
-| `pytest-asyncio` | 异步测试支持 |
-| `httpx` | FastAPI 端点测试客户端 |
-| `black` | 代码格式化 |
-| `ruff` | Linter |
-
-### 环境变量说明
-
-`.env.example` 提供了完整的配置模板：
+### 快速启动
 
 ```bash
-# 服务配置
-LIGHTSMITH_HOST=0.0.0.0
-LIGHTSMITH_PORT=8000
-LIGHTSMITH_DEBUG=false
+# 1. 安装依赖
+cd backend && pip install -e ".[dev]"
 
-# 数据库配置（二选一）
-LIGHTSMITH_DATABASE_URL=postgresql://lightsmith:lightsmith@localhost:5432/lightsmith
-# LIGHTSMITH_DATABASE_URL=sqlite:///./lightsmith.db
+# 2. 配置环境
+cp .env.example .env  # 编辑 LIGHTSMITH_DATABASE_URL
 
-# API 配置
-LIGHTSMITH_API_PREFIX=/api
-LIGHTSMITH_CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
-
-# 分页配置
-LIGHTSMITH_DEFAULT_PAGE_SIZE=50
-LIGHTSMITH_MAX_PAGE_SIZE=1000
-
-# 批量摄入限制
-LIGHTSMITH_MAX_BATCH_SIZE=1000
-```
-
-使用时复制为 `.env`：
-
-```bash
-cp .env.example .env
-# 编辑 .env，修改数据库 URL 等配置
-```
-
-### 快速启动流程
-
-**1. 安装依赖**
-
-```bash
-cd backend
-pip install -e ".[dev]"
-```
-
-**2. 配置环境变量**
-
-```bash
-cp .env.example .env
-# 编辑 .env，设置 LIGHTSMITH_DATABASE_URL
-```
-
-**3. 初始化数据库（PostgreSQL）**
-
-```bash
-# 创建数据库（首次）
-createdb lightsmith
-
-# 运行迁移（P1.2 创建表结构后）
+# 3. 初始化数据库
+createdb lightsmith  # PostgreSQL
 alembic upgrade head
-```
 
-**4. 启动服务**
-
-```bash
-# 开发模式（自动重载）
+# 4. 启动服务
 uvicorn app.main:app --reload --port 8000
-
-# 或直接运行
-python -m app.main
 ```
 
-**5. 访问**
-
-- API 文档：http://localhost:8000/api/docs
-- 健康检查：http://localhost:8000/health
-
-### 验证
-
-**语法验证**（已通过）：
-
-```bash
-python -m py_compile app/config.py
-python -m py_compile app/main.py
-python -m py_compile app/db/base.py
-python -m py_compile alembic/env.py
-```
-
-全部文件语法正确 ✅
-
-**导入测试**（需安装依赖后执行）：
-
-```bash
-python -c "from app.config import get_settings; print(get_settings().app_name)"
-python -c "from app.main import app; print(app.title)"
-python -c "from app.db import engine; print(engine.url)"
-```
-
-### 设计对齐
-
-**与 P0 SDK 的对齐**
-
-- `Settings.database_url` 支持 SQLite（与 P0.4 `RunWriter` 一致）和 PostgreSQL（P1 生产环境）
-- `get_db` 依赖注入模式与 P0.3 `set_run_writer` 钩子设计思路一致（解耦存储层）
-- `Base.metadata` 将在 P1.2 中注册 `Run` ORM 模型，与 P0.1 `Run` dataclass 字段一一对应
-
-**与 P1.2-P1.4 的接口**
-
-- `app/models/` 预留给 ORM 模型（P1.2）
-- `app/schemas/` 预留给 Pydantic schema（P1.3-P1.4）
-- `app/routers/` 预留给 API 路由（P1.3-P1.4）
-- `alembic/versions/` 将在 P1.2 生成首个迁移脚本
+访问：http://localhost:8000/api/docs
 
 ### 遗留 / 待注意
 
-- **依赖未安装**：当前仅创建了文件，需执行 `pip install -e ".[dev]"` 才能运行
-- **数据库未初始化**：需等 P1.2 创建 ORM 模型后才能执行 `alembic upgrade head`
-- **路由未实现**：`main.py` 中的 `TODO` 注释标记了 P1.3 和 P1.4 需要注册的路由
-- **测试未编写**：`tests/` 目录仅有占位文件，P1.2+ 补充单元测试和集成测试
-- **CORS 配置**：默认允许 `localhost:3000`（React 开发服务器）和 `localhost:5173`（Vite），生产环境需修改 `LIGHTSMITH_CORS_ORIGINS`
-- **日志系统**：当前仅使用 `print` 和 `uvicorn` 默认日志，P3 可考虑接入 `structlog` 或 `loguru`
+- **SQLite 引擎配置 bug**：P1.1 中 `pool_size=None` 导致 TypeError，已在 P1.2 修复
+- **CORS 配置**：默认允许 `localhost:3000`（React）和 `localhost:5173`（Vite），生产环境需修改
+- **日志系统**：当前使用 `print`，P3 可考虑 `structlog` 或 `loguru`
 
 ### P1.1 检查点
 
-- [√] `pyproject.toml` 配置完整（核心依赖 + 开发依赖）
-- [√] `pydantic-settings` 配置管理（类型验证、环境变量映射、单例）
-- [√] FastAPI 应用可创建（lifespan、CORS、健康检查）
-- [√] SQLAlchemy 引擎和会话工厂（SQLite/PostgreSQL 兼容）
-- [√] Alembic 迁移环境配置（集成 pydantic-settings）
-- [√] 环境变量模板和项目文档
-- [√] 所有 Python 文件语法正确
-- [√] 目录结构与 PLAN.md 对齐
+- [√] pydantic-settings 配置管理（类型验证、环境变量映射）
+- [√] FastAPI 应用（lifespan、CORS、健康检查）
+- [√] SQLAlchemy 引擎和会话工厂（SQLite/PostgreSQL 双支持）
+- [√] Alembic 迁移环境配置
+- [√] 依赖注入模式（`get_db`）
+- [√] 分层架构设计（db/models/repository 职责分离）
 
-**P1.1 阶段完成总结**：
-- ✅ 项目脚手架完整：配置管理、FastAPI 入口、数据库层、迁移工具
-- ✅ 零运行时错误：所有文件语法验证通过
-- ✅ 文档完善：README、.env.example、Alembic README
-- ✅ 接口预留：为 P1.2-P1.4 预留 models/schemas/routers 目录
-- ✅ 设计前瞻：SQLite/PostgreSQL 双支持、配置验证、依赖注入
+---
+
+## P1.2 数据库层（SQLAlchemy）
+
+**完成时间**：2026-04-03
+**状态**：[√] 已完成
+
+### 完成内容
+
+| 任务 | 产出文件 |
+|------|---------|
+| SQLAlchemy ORM Run 模型 | `backend/app/models/run.py` |
+| RunRepository 数据访问层 | `backend/app/db/repository.py` |
+| Alembic 初始迁移脚本 | `backend/alembic/versions/cdb5bf900e44_*.py` |
+| 单元测试（11 个通过） | `backend/tests/test_repository.py` |
+
+### 关键决策
+
+**ORM 模型设计**
+
+与 P0.1 SDK Run dataclass 字段一一对应：
+
+```python
+class Run(Base):
+    __tablename__ = "runs"
+    
+    # 身份字段
+    id = Column(String(36), primary_key=True)
+    trace_id = Column(String(36), nullable=False, index=True)
+    parent_run_id = Column(String(36), nullable=True, index=True)
+    
+    # 描述字段
+    name = Column(String(255), nullable=False)
+    run_type = Column(String(20), nullable=False)
+    
+    # 数据字段（JSON 存储）
+    inputs = Column(JSON, nullable=False, default={})
+    outputs = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    
+    # 时间字段（ISO 8601 字符串）
+    start_time = Column(String(32), nullable=False, index=True)
+    end_time = Column(String(32), nullable=True)
+    
+    # 扩展字段（JSON 存储）
+    run_metadata = Column("metadata", JSON, nullable=False, default={})  # ← 避免 SQLAlchemy 保留字冲突
+    tags = Column(JSON, nullable=False, default=[])
+    
+    # 排序字段
+    exec_order = Column(Integer, nullable=False, default=0)
+```
+
+关键点：
+- **JSON 类型**：SQLite 和 PostgreSQL 都支持
+- **时间存储**：ISO 8601 字符串（与 SDK 一致），避免时区问题
+- **索引**：trace_id（高频查询）、parent_run_id（树重建）、start_time（时间过滤）
+- **metadata 字段**：Python 中命名为 `run_metadata`，数据库列名为 `metadata`
+
+**Repository 设计**
+
+```python
+class RunRepository:
+    def __init__(self, db: Session):
+        self.db = db
+    
+    # 批量保存（幂等性）
+    def save_batch(self, runs: list[Run]) -> dict[str, int]:
+        # SQLite: INSERT OR IGNORE
+        # PostgreSQL: ON CONFLICT DO NOTHING
+        ...
+    
+    # 查询
+    def get_run_by_id(self, run_id: str) -> Optional[Run]
+    def get_trace(self, trace_id: str) -> list[Run]  # 按 exec_order 排序
+    
+    # 分页查询（支持多种过滤）
+    def list_traces(
+        self, page=1, page_size=50,
+        run_type=None, tags=None, has_error=None,
+        start_after=None, start_before=None
+    ) -> dict  # {"items": [...], "total": N, "page": M, "page_size": K, "total_pages": P}
+    
+    # 统计
+    def count_traces(self) -> int  # 根 Run 数量
+    def count_runs(self) -> int    # 所有 Run 数量
+```
+
+**幂等性实现**
+
+使用数据库原生能力，避免并发 race condition：
+
+```python
+if self.settings.is_sqlite:
+    stmt = sqlite_insert(Run).values(...).prefix_with("OR IGNORE")
+else:
+    stmt = pg_insert(Run).values(...).on_conflict_do_nothing(index_elements=["id"])
+```
+
+同一 `run.id` 重复提交时静默忽略，以首次为准。
+
+**Alembic 迁移脚本**
+
+Windows 系统 `alembic revision --autogenerate` 遇到编码问题（UnicodeDecodeError: 'gbk'），手动创建迁移脚本：
+
+```python
+# backend/alembic/versions/cdb5bf900e44_initial_migration_create_runs_table.py
+def upgrade() -> None:
+    op.create_table('runs', ...)
+    op.create_index('idx_runs_trace_id', 'runs', ['trace_id'])
+    op.create_index('idx_runs_parent_run_id', 'runs', ['parent_run_id'])
+    op.create_index('idx_runs_start_time', 'runs', ['start_time'])
+
+def downgrade() -> None:
+    op.drop_index('idx_runs_start_time', table_name='runs')
+    op.drop_index('idx_runs_parent_run_id', table_name='runs')
+    op.drop_index('idx_runs_trace_id', table_name='runs')
+    op.drop_table('runs')
+```
+
+**测试覆盖**
+
+11 个测试用例全部通过（1.41s）：
+
+| 测试 | 验证内容 |
+|------|---------|
+| `test_save_batch_success` | 批量保存 |
+| `test_save_batch_idempotent` | 幂等性（重复提交不报错） |
+| `test_get_run_by_id` | 单条查询 |
+| `test_get_trace` | 树查询（exec_order 排序） |
+| `test_get_trace_empty` | 查询不存在的 trace |
+| `test_list_traces_pagination` | 分页 |
+| `test_list_traces_filter_run_type` | run_type 过滤 |
+| `test_list_traces_filter_error` | 错误状态过滤 |
+| `test_list_traces_filter_time_range` | 时间范围过滤 |
+| `test_count_traces` / `test_count_runs` | 统计 |
+
+### 使用示例
+
+```python
+@router.post("/api/runs/batch")
+def batch_ingest(runs: list[Run], db: Session = Depends(get_db)):
+    repo = RunRepository(db)
+    return repo.save_batch(runs)  # {"accepted": N, "duplicates": M}
+
+@router.get("/api/traces/{trace_id}")
+def get_trace(trace_id: str, db: Session = Depends(get_db)):
+    repo = RunRepository(db)
+    runs = repo.get_trace(trace_id)
+    if not runs:
+        raise HTTPException(404, "Trace not found")
+    return runs  # P1.4 转换为树形 JSON
+```
+
+### 遗留 / 待注意
+
+- **duration_gt 过滤**：暂未实现，需在 P1.4 API 层计算耗时后过滤
+- **tags 过滤性能**：大数据量下可考虑 PostgreSQL GIN 索引或 SQLite 关联表
+- **Alembic 编码问题**：Windows 上无法自动生成，后续迁移可在 Linux/Mac 生成
+- **PostgreSQL 测试**：当前仅测试 SQLite，PostgreSQL 行为需集成测试验证
+- **run_metadata 命名**：API 层需转换回 `metadata`（P1.3-P1.4 实现 Pydantic schema 时处理）
+
+### P1.2 检查点
+
+- [√] ORM 模型（与 SDK dataclass 对齐）
+- [√] RunRepository（save_batch、get_trace、list_traces、幂等性）
+- [√] Alembic 迁移脚本（创建表和索引）
+- [√] 单元测试（11 个全部通过）
+- [√] SQLite/PostgreSQL 双支持（引擎配置优化）
+- [√] metadata 字段冲突解决
+
+**P1.2 阶段完成总结**：
+- ✅ ORM 模型与 SDK 完全对齐
+- ✅ Repository 封装完善（批量保存、树查询、分页、统计）
+- ✅ 幂等性保证（数据库层原子操作）
+- ✅ 测试覆盖充分
+- ✅ 数据库迁移就绪
+- ✅ 为 P1.3-P1.4 API 层提供完整数据访问能力
 
 ---

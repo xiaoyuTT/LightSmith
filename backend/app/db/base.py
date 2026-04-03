@@ -14,15 +14,21 @@ from app.config import get_settings
 settings = get_settings()
 
 # 创建数据库引擎
-engine = create_engine(
-    settings.database_url,
-    echo=settings.debug,  # SQL 日志输出（调试模式）
-    # SQLite 特殊配置
-    connect_args={"check_same_thread": False} if settings.is_sqlite else {},
-    # PostgreSQL 连接池配置
-    pool_size=10 if settings.is_postgresql else None,
-    max_overflow=20 if settings.is_postgresql else None,
-)
+if settings.is_sqlite:
+    # SQLite 配置：禁用线程检查，不使用连接池
+    engine = create_engine(
+        settings.database_url,
+        echo=settings.debug,
+        connect_args={"check_same_thread": False},
+    )
+else:
+    # PostgreSQL 配置：启用连接池
+    engine = create_engine(
+        settings.database_url,
+        echo=settings.debug,
+        pool_size=10,
+        max_overflow=20,
+    )
 
 # 会话工厂
 SessionLocal = sessionmaker(

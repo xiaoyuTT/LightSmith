@@ -12,6 +12,10 @@ from alembic import context
 from app.db.base import Base
 from app.config import get_settings
 
+# 导入所有模型（让 Alembic 能检测到它们）
+# 必须在设置 target_metadata 之前导入
+from app.models import Run  # noqa: F401
+
 # Alembic Config 对象（从 alembic.ini 加载）
 config = context.config
 

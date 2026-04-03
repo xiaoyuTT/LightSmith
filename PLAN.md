@@ -217,10 +217,10 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 ### P1.2 数据库层（SQLAlchemy）
 
-- [ ] 将 P0.4 的 SQLite schema 迁移为 SQLAlchemy ORM 模型
-- [ ] 实现 `RunRepository`：`save_batch(runs)`、`get_trace(trace_id)`、`list_traces(filters, page, page_size)`
-- [ ] 添加 PostgreSQL 支持（环境变量 `DATABASE_URL` 切换）
-- [ ] Alembic 初始迁移脚本
+- [√] 将 P0.4 的 SQLite schema 迁移为 SQLAlchemy ORM 模型
+- [√] 实现 `RunRepository`：`save_batch(runs)`、`get_trace(trace_id)`、`list_traces(filters, page, page_size)`
+- [√] 添加 PostgreSQL 支持（环境变量 `DATABASE_URL` 切换）
+- [√] Alembic 初始迁移脚本
 
 ### P1.3 Run 摄入 API
 
