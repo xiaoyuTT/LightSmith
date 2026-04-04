@@ -240,11 +240,11 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 > 修改 SDK，将本地 SQLite 写入替换/补充为 HTTP 上报
 
-- [ ] 实现 `BatchBuffer`：内存队列 + 定时 flush（满 100 条 或 5s 触发）
-- [ ] 实现 `HttpClient`：向后端 `POST /api/runs/batch`，带重试（最多 3 次，指数退避）
-- [ ] 注册 `atexit` 钩子：进程退出时强制 flush 剩余数据（注意：`atexit` 在 asyncio 程序中无法 `await`，需同步阻塞执行；同时注册 `signal.SIGTERM` handler 处理容器/进程被杀情形）
-- [ ] 支持配置：`LIGHTSMITH_ENDPOINT`、`LIGHTSMITH_API_KEY`（预留鉴权位）
-- [ ] 本地 SQLite 模式保留（离线 fallback，通过 `LIGHTSMITH_LOCAL=true` 启用）
+- [√] 实现 `BatchBuffer`：内存队列 + 定时 flush（满 100 条 或 5s 触发）
+- [√] 实现 `HttpClient`：向后端 `POST /api/runs/batch`，带重试（最多 3 次，指数退避）
+- [√] 注册 `atexit` 钩子：进程退出时强制 flush 剩余数据（注意：`atexit` 在 asyncio 程序中无法 `await`，需同步阻塞执行；同时注册 `signal.SIGTERM` handler 处理容器/进程被杀情形）
+- [√] 支持配置：`LIGHTSMITH_ENDPOINT`、`LIGHTSMITH_API_KEY`（预留鉴权位）
+- [√] 本地 SQLite 模式保留（离线 fallback，通过 `LIGHTSMITH_LOCAL=true` 启用）
 
 ### P1.6 Docker 化
 
