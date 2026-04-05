@@ -248,10 +248,10 @@ LightTrace/                     # 仓库根目录（项目对外名称：LightSm
 
 ### P1.6 Docker 化
 
-- [ ] 编写 `backend/Dockerfile`（多阶段构建，最终镜像 < 200MB）
-- [ ] 编写 `docker-compose.yml`：后端 + PostgreSQL 一键启动
-- [ ] 挂载 volume 持久化 PostgreSQL 数据
-- [ ] 健康检查：`GET /health` 端点
+- [√] 编写 `backend/Dockerfile`（多阶段构建，最终镜像 < 200MB）
+- [√] 编写 `docker-compose.yml`：后端 + PostgreSQL 一键启动
+- [√] 挂载 volume 持久化 PostgreSQL 数据
+- [√] 健康检查：`GET /health` 端点
 
 ### ✅ P1 Review 检查点
 

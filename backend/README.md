@@ -11,25 +11,6 @@ cd backend
 pip install -e ".[dev]"
 ```
 
-**常见安装问题**：
-
-**问题1：`Multiple top-level packages discovered` 错误**
-
-```
-error: Multiple top-level packages discovered in a flat-layout: ['app', 'alembic', 'execute'].
-```
-
-**原因**：setuptools 在 `backend/` 目录发现多个顶层目录，不知道该打包哪个。
-
-**解决**：已在 `pyproject.toml` 中配置包发现规则，只打包 `app` 包。如果仍有问题，检查 `pyproject.toml` 是否包含：
-
-```toml
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["app*"]
-exclude = ["tests*", "alembic*", "execute*"]
-```
-
 ### 2. 配置环境变量
 
 ```bash
@@ -42,16 +23,6 @@ cp .env.example .env
 `.env.example` 是环境变量配置模板：
 - **`.env.example`**：示例配置，提交到 Git（公开、安全）
 - **`.env`**：真实配置，不提交到 Git（包含敏感信息如密码）
-
-```bash
-# .env.example（模板 - 可以公开）
-LIGHTSMITH_DATABASE_URL=postgresql://user:password@localhost:5432/db
-#                                     ^^^^ ^^^^^^^^ 示例值
-
-# .env（实际配置 - 保密）
-LIGHTSMITH_DATABASE_URL=postgresql://admin:MyReal$ecret@prod.db.com/db
-#                                     ^^^^^ ^^^^^^^^^^^^^ 真实密码
-```
 
 **为什么这样设计？**
 - ✅ 新人克隆项目后，复制模板即可快速配置
@@ -107,8 +78,6 @@ backend/
 ├── pyproject.toml           # 项目配置（现代标准，PEP 621）
 └── README.md
 ```
-
-**注意**：本项目使用现代 Python 打包标准（PEP 621），仅需 `pyproject.toml` 一个配置文件。不需要 `setup.py` 或 `setup.cfg`。
 
 ## API 端点
 
@@ -476,12 +445,7 @@ uvicorn app.main:app --reload  # 自动检测文件修改并重启
 - 修改 `pyproject.toml` 依赖：需重新 `pip install -e .` ❌
 - 修改 `.env` 文件：需手动重启 uvicorn ❌
 
-### Q: `.env` 和 `.env.example` 有什么区别？
-
-| 文件 | 作用 | 内容 | Git 状态 |
-|------|------|------|---------|
-| `.env.example` | 配置模板 | 示例值、注释 | ✅ 提交到仓库 |
-| `.env` | 实际配置 | 真实密码、生产环境配置 | ❌ 不提交（在 .gitignore 中）|
+### Q: `.env` 和 `.env.example`？
 
 **使用流程**：
 ```bash
@@ -499,11 +463,6 @@ nano .env  # 修改数据库密码等敏感信息
 uvicorn app.main:app --reload
 # ✅ 程序读取 .env 中的真实配置
 ```
-
-**安全性**：
-- `.env.example` 提交到 Git，团队共享（无敏感信息）
-- `.env` 保留在本地，每个开发者自己配置（有真实密码）
-- 防止密码泄露到 GitHub 等公开仓库
 
 ### Q: 为什么同时有 `.env.example`、`pyproject.toml` 和 `config.py`？
 

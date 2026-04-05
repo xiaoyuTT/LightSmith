@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:16-alpine
+    container_name: lightsmith-postgres
+    environment:
+      POSTGRES_USER: lightsmith
+      POSTGRES_PASSWORD: lightsmith
+      POSTGRES_DB: lightsmith
+      # 优化配置（适合小型部署）
+      POSTGRES_SHARED_BUFFERS: 256MB
+      POSTGRES_EFFECTIVE_CACHE_SIZE: 1GB
+    ports:
+      - "5432:5432"
+    volumes:
+      # 持久化数据（挂载到宿主机）
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lightsmith"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lightsmith-network
+    restart: unless-stopped
+
+  # LightSmith 后端服务
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lightsmith-backend
+    env_file:
+      - .env  # 从根目录读取环境变量
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - lightsmith-network
+    restart: unless-stopped
+    # 启动时等待数据库就绪，然后运行迁移
+    command: >
+      sh -c "
+        echo '[*] Waiting for database...' &&
+        sleep 5 &&
+        echo '[*] Running database migrations...' &&
+        alembic upgrade head &&
+        echo '[*] Starting backend service...' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+
+# 持久化卷
+volumes:
+  postgres_data:
+    driver: local
+
+# 网络
+networks:
+  lightsmith-network:
+    driver: bridge
